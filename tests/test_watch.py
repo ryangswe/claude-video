@@ -39,6 +39,12 @@ def test_token_burner_uses_scene_engine(cut_clip: Path):
     assert "(scene" in out
 
 
+def test_talk_uses_scene_engine_with_cap_300(cut_clip: Path):
+    out = _run(cut_clip, "--detail", "talk")
+    assert "(scene" in out and "cap 300" in out
+    assert "**Detail:** talk" in out
+
+
 def test_transcript_skips_frames(cut_clip: Path):
     out = _run(cut_clip, "--detail", "transcript")
     assert "skipped" in out
@@ -284,3 +290,94 @@ def test_failed_upload_is_reported_honestly_and_work_dir_removed(monkeypatch, ca
     assert 'URL sent to Google' not in out and 'upload to Google failed' in out
     assert out_dir.is_dir() and list(out_dir.iterdir()) == [], 'the run-owned work dir must be removed'
     assert static_clip.is_file(), 'the user source file is never deleted'
+
+
+def test_long_report_prints_short_version_and_writes_files(monkeypatch, tmp_path, capsys):
+    cues = ''.join(f'{i // 60:02d}:{i % 60:02d}.000 --> {i // 60:02d}:{i % 60:02d}.900\n'
+                   f'sentence {i} about compilers, caching and long conference talks\n\n' for i in range(3000))
+    _caption_context(monkeypatch, tmp_path, cues)
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--detail', 'transcript',
+                                      '--out-dir', str(tmp_path / 'out')])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    assert len(out.encode('utf-8')) <= watch.STDOUT_LIMIT
+    assert 'sentence 2999' not in out and 'report.md' in out
+    work = next((tmp_path / 'out').glob('watch-*'))
+    report = (work / 'report.md').read_text(encoding='utf-8')
+    assert 'sentence 0 ' in report and 'sentence 2999 ' in report
+    parts = sorted((work / 'transcript').glob('part-*.md'))
+    assert len(parts) > 1 and all(str(part) in out for part in parts)
+    assert all(len(part.read_bytes()) <= watch.TRANSCRIPT_PART_LIMIT for part in parts)
+    assert all(b'\r' not in part.read_bytes() for part in parts)
+    rebuilt = '\n'.join(part.read_text(encoding='utf-8').split('```\n')[1].rstrip('\n') for part in parts)
+    whole = (work / 'transcript.md').read_text(encoding='utf-8').split('\n\n', 1)[1].rstrip('\n')
+    assert rebuilt == whole and whole.count('\n') == 2999
+
+
+def test_short_report_prints_whole_and_is_saved(monkeypatch, tmp_path, capsys):
+    _caption_context(monkeypatch, tmp_path, '00:00.000 --> 00:10.000\nhello\n')
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--detail', 'transcript',
+                                      '--out-dir', str(tmp_path / 'out')])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    work = next((tmp_path / 'out').glob('watch-*'))
+    assert 'hello' in out and out == (work / 'report.md').read_text(encoding='utf-8')
+    assert not (work / 'transcript').exists()
+
+
+def test_compact_frame_list_moves_long_lists_to_a_file(tmp_path):
+    frames = [{'path': str(tmp_path / 'frames' / f'frame_{i:04d}.jpg'), 'timestamp_seconds': i,
+               'reason': 'scene-change'} for i in range(500)]
+    short = watch.frame_lines(frames[:10], tmp_path, compact=True)
+    assert '- `frame_0003.jpg` (t=00:03, reason=scene-change)' in short
+    long = watch.frame_lines(frames, tmp_path, compact=True)
+    assert len('\n'.join(long).encode()) < 2000
+    listing = (tmp_path / 'frames.md').read_text()
+    assert str(tmp_path / 'frames' / 'frame_0499.jpg') in listing
+
+
+def test_long_report_respects_focus_range(monkeypatch, tmp_path, capsys):
+    cues = ''.join(f'{i // 60:02d}:{i % 60:02d}.000 --> {i // 60:02d}:{i % 60:02d}.900\n'
+                   f'sentence {i} about compilers, caching and long conference talks\n\n' for i in range(3000))
+    subtitle = _caption_context(monkeypatch, tmp_path, cues)
+    monkeypatch.setattr(watch, 'fetch_captions', lambda *a, **kw: {
+        'subtitle_path': str(subtitle), 'info': {'title': 'talk', 'duration': 3000},
+        'caption_track': {'language': 'en', 'kind': 'manual', 'provenance': 'original'},
+    })
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--detail', 'transcript',
+                                      '--start', '10:00', '--end', '40:00', '--out-dir', str(tmp_path / 'out')])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    assert 'Filtered to 10:00' in out
+    work = next((tmp_path / 'out').glob('watch-*'))
+    joined = ''.join(p.read_text(encoding='utf-8') for p in sorted((work / 'transcript').glob('part-*.md')))
+    assert 'sentence 600 ' in joined and 'sentence 2400 ' in joined
+    assert 'sentence 598 ' not in joined and 'sentence 2402 ' not in joined
+
+
+def test_report_files_survive_undecodable_paths(tmp_path):
+    text = 'source /nonexist/caf\udce9.mp4\n'
+    watch.write_report_file(tmp_path / 'report.md', text)
+    assert watch.utf8_size(text) == len((tmp_path / 'report.md').read_bytes())
+
+
+def _talk_run(monkeypatch, tmp_path, capsys, meta):
+    monkeypatch.setattr(watch, 'download', lambda *a, **kw: {'video_path': 'talk.mp4'})
+    monkeypatch.setattr(watch, 'get_metadata', lambda *a: {'duration_seconds': 1200, 'width': 640, 'height': 360,
+                                                           'codec': 'h264', 'has_audio': False, 'has_video': True})
+    frames = [{'path': str(tmp_path / 'frames' / f'frame_{i:04d}.jpg'), 'timestamp_seconds': i * 4,
+               'reason': 'scene-change'} for i in range(meta['selected_count'])]
+    monkeypatch.setattr(watch, 'extract_scene_or_uniform', lambda *a, **kw: (frames, {'engine': 'scene', **meta}))
+    monkeypatch.setattr(sys, 'argv', ['watch', 'talk.mp4', '--detail', 'talk', '--no-whisper',
+                                      '--out-dir', str(tmp_path / 'out')])
+    assert watch.main() == 0
+    return capsys.readouterr().out
+
+
+def test_talk_warns_only_when_the_cap_thins_frames(monkeypatch, tmp_path, capsys):
+    deduped_only = _talk_run(monkeypatch, tmp_path, capsys,
+                             {'candidate_count': 50, 'deduped_count': 10, 'selected_count': 40})
+    assert 'Warning' not in deduped_only
+    capped = _talk_run(monkeypatch, tmp_path, capsys,
+                       {'candidate_count': 400, 'deduped_count': 0, 'selected_count': 300})
+    assert 'Frame coverage is sparse' in capped and 'use `--detail talk`' not in capped

@@ -13,6 +13,8 @@ from runtime import configure_stdio
 TIME = r'(?:[0-9]{2,}:)?[0-5][0-9]:[0-5][0-9][.,][0-9]{3}'
 TIMING_RE = re.compile(rf'^\s*({TIME})\s+-->\s+({TIME})(?:\s+.*)?$')
 TAG_RE = re.compile(r'<[^>]*>')
+# Inline word timestamps such as <00:00:00.500>; YouTube's automatic captions always carry them.
+WORD_TIME_RE = re.compile(rf'<{TIME}>')
 
 
 class Segments(list):
@@ -52,6 +54,7 @@ def _seconds(stamp: str) -> float:
 def parse_vtt(path: str) -> list[dict]:
     lines = Path(path).read_text(encoding='utf-8-sig').splitlines()
     segments = []
+    rolling = False
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -74,10 +77,40 @@ def parse_vtt(path: str) -> list[dict]:
                 break
             payload.append(lines[i])
             i += 1
-        text = ' '.join(html.unescape(TAG_RE.sub('', part)).strip() for part in payload).strip()
+        rolling = rolling or any(WORD_TIME_RE.search(part) for part in payload)
+        cleaned = [html.unescape(TAG_RE.sub('', part)).strip() for part in payload]
+        text = ' '.join(cleaned).strip()
         if text and end >= start:
-            segments.append({'start': start, 'end': end, 'text': text, '_display': display})
+            segments.append({'start': start, 'end': end, 'text': text, '_display': display,
+                             '_lines': [part for part in cleaned if part]})
+    if rolling:
+        segments = _collapse_rolling(segments)
     return [{k: s[k] for k in ('start', 'end', 'text')} for s in _dedupe(segments)]
+
+
+# YouTube's automatic captions are "rolling": each cue repeats the previous cue's last
+# line above its new words, and a ~10 ms snapshot cue repeats the finished line again.
+SNAPSHOT_SECONDS = 0.05
+
+
+def _collapse_rolling(segments: list[dict]) -> list[dict]:
+    """Drop the carried-over first line of a rolling cue and the snapshot cues that only
+    repeat the previous cue's last line. Only called for files with inline word timestamps,
+    so a line repeated in ordinary two-line subtitles (lyrics, dialogue) is kept."""
+    out = []
+    previous_last = None
+    for seg in segments:
+        lines = seg['_lines']
+        carried = previous_last is not None and len(lines) > 0 and lines[0] == previous_last
+        previous_last = lines[-1] if lines else previous_last
+        if carried and len(lines) == 1 and seg['end'] - seg['start'] <= SNAPSHOT_SECONDS:
+            if out:
+                out[-1]['end'] = max(out[-1]['end'], seg['end'])
+            continue
+        if carried and len(lines) > 1:
+            seg = {**seg, 'text': ' '.join(lines[1:]), '_lines': lines[1:]}
+        out.append(seg)
+    return out
 
 
 def _dedupe(segments: list[dict]) -> list[dict]:
