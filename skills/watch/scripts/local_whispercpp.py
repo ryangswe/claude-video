@@ -2,9 +2,11 @@
 
 whisper.cpp runs Silero voice activity detection first, so long silences and music do
 not turn into invented text. It also starts each 30-second window without the text before
-it (-mc 0): with that text, a long talk fell into loops that repeated one sentence dozens
-of times, at different places on different runs. It reports one entry per word; the words are regrouped
-into sentence-sized segments here. Around a silence, whisper.cpp stretches one word
+it (-mc 0). With that text, a long talk fell into loops that repeated one sentence dozens
+of times, at different places on different runs.
+
+It reports one entry per word; the words are regrouped into sentence-sized segments
+here. Around a silence, whisper.cpp stretches one word
 across the gap, so an entry much longer than its text needs to be spoken marks a
 boundary. In scripts written without spaces (Chinese, Japanese, Thai...) an entry is a
 whole phrase, so the allowance grows with the text and uses a slower per-character rate.
