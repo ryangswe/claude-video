@@ -231,10 +231,12 @@ Measured on an M3 Max against WhisperX `small` on the CPU, using LibriSpeech rea
 
 | Audio | whisper.cpp `large-v3-turbo` | WhisperX `small` |
 |---|---|---|
-| 8.7 minutes | 26 s, 3.1% word error rate | 39 s, 5.7% |
-| 74 minutes, with 60 s and 120 s silences and 60 s of noise | 143 s, 3.7%, no invented text | 356 s, 5.6% |
+| 8.7 minutes | 12 s, 3.7% word error rate | 39 s, 5.7% |
+| 74 minutes, with 60 s and 120 s silences and 60 s of noise | 99 s, 3.7%, no invented text | 356 s, 5.6% |
 
-Voice activity detection is always on. Without it, Whisper filled the long silences with invented words in the same test. whisper.cpp reports one entry per word and stretches one word across each silence. The skill regroups the words into sentences and detects the stretched word, so in the test a sentence after a silence started within about a second of its real time. Settings are `WATCH_WHISPERCPP_MODEL`, `WATCH_WHISPERCPP_LANGUAGE` (a two- or three-letter hint; otherwise detected and named in the report) and `WATCH_WHISPERCPP_TIMEOUT`.
+Voice activity detection is always on. Without it, Whisper filled the long silences with invented words in the same test. whisper.cpp reports one entry per word and stretches one word across each silence. The skill regroups the words into sentences and detects the stretched word, so in the test a sentence after a silence started within about a second of its real time. Each 30-second window also starts without the text before it (`-mc 0`). In a test on one English keynote of 1 hour 53 minutes, carrying that text forward led to repetition loops. One run repeated a sentence 47 times, and the same settings run twice looped once and not the other time. Without the carried text, two runs had no loops and 5.6% word error measured against the manual captions, compared with 6.1% to 9.5% with it. Loops are less likely this way, not impossible. Because each window is decoded on its own, a name or a number can be spelled differently from one window to the next. Read audiobook speech can also come out in lowercase without punctuation: the LibriSpeech test above did, while the keynote kept its punctuation. With the earlier text carried forward, the same LibriSpeech test took 26 s at 3.1% and 143 s at 3.7%.
+
+Settings are `WATCH_WHISPERCPP_MODEL`, `WATCH_WHISPERCPP_LANGUAGE` (a two- or three-letter hint; otherwise detected and named in the report) and `WATCH_WHISPERCPP_TIMEOUT`.
 
 ### Managed WhisperX
 
