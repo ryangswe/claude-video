@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.4.1] — 2026-11-11 — fork release
+
+### Fixed
+- whisper.cpp no longer falls into repetition loops as easily on long talks. Each 30-second window now starts without the text before it (`-mc 0`). On a 1 hour 53 minute keynote, runs that carried the earlier text forward repeated one sentence up to 47 times, at different places on different runs, and had 6.1% to 9.5% word error. Two runs without it had no loops and 5.6%. On the LibriSpeech test, the 74-minute file now takes 99 s (was 143 s) at the same 3.7%. The read speech came out in lowercase without punctuation, though the keynote kept its punctuation, and names can be spelled differently from one window to the next.
+
 ## [0.4.0] — 2026-11-10 — fork release
 
 ### Added
