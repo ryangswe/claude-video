@@ -32,6 +32,7 @@ def test_get_config_keys(monkeypatch, tmp_path):
 def test_frame_cap_mapping():
     assert config.frame_cap("efficient") == 50
     assert config.frame_cap("balanced") == 100
+    assert config.frame_cap("talk") == 300
     assert config.frame_cap("token-burner") is None
     assert config.frame_cap("transcript") is None
     assert config.frame_cap("anything-else") == 100

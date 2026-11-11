@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """/watch entry point: download video, extract frames, parse transcript.
 
-Prints a markdown report to stdout listing frame paths + transcript. Claude
-then Reads each frame path to see the video.
+Writes a markdown report (frame paths + transcript) to report.md in the work dir.
+A report that fits in one tool result is printed whole; a larger one is printed
+as a short version that points to a frame list and transcript parts on disk.
+The agent then Reads each frame path to see the video.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import math
 import shutil
 import sys
@@ -28,6 +32,78 @@ from runtime import configure_stdio  # noqa: E402
 
 LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "max_frames"),
                     ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"))
+
+# Hosts cut long tool output: Claude Code keeps only a 2 KB preview of output past
+# about 25 KB. Reports above this size are printed as a short version instead.
+STDOUT_LIMIT = 20_000
+# Each transcript part stays small enough for a single Read call.
+TRANSCRIPT_PART_LIMIT = 40_000
+# A longer frame list goes to frames.md rather than into the printed report.
+FRAME_LIST_LIMIT = 12_000
+FRAME_ORDER_NOTE = ("Frames are in chronological order; `t=MM:SS` is the absolute timestamp "
+                    "in the source video.")
+
+
+def utf8_size(text: str) -> int:
+    return len(text.encode("utf-8", "backslashreplace"))
+
+
+def write_report_file(path: Path, text: str) -> None:
+    """LF endings on every OS (sizes stay as measured) and no crash on undecodable paths."""
+    with open(path, "w", encoding="utf-8", errors="backslashreplace", newline="\n") as handle:
+        handle.write(text)
+
+
+def _frame_entry(frame: dict, name: str) -> str:
+    return (f"- `{name}` (t={format_time(frame['timestamp_seconds'])}, "
+            f"reason={frame.get('reason', 'selected')})")
+
+
+def frame_lines(frames: list[dict], work: Path, compact: bool = False) -> list[str]:
+    """The report's Frames section. Compact mode names files relative to the frames folder
+    and moves a long list to frames.md, so the printed report stays small."""
+    if not frames:
+        return ["## Frames", "", "_No frames extracted._"]
+    folder = work / "frames"
+    lines = ["## Frames", "", f"Frames live at: `{folder}`", ""]
+    full_entries = [_frame_entry(frame, frame["path"]) for frame in frames]
+    if not compact:
+        return lines + [f"**Read each frame path below with the Read tool to view the image.** {FRAME_ORDER_NOTE}",
+                        "", *full_entries]
+    short_entries = [_frame_entry(frame, Path(frame["path"]).name if Path(frame["path"]).parent == folder
+                                  else frame["path"]) for frame in frames]
+    if utf8_size("\n".join(short_entries)) <= FRAME_LIST_LIMIT:
+        return lines + [f"**Read each frame below with your image-viewing tool, at `<frames folder>/<file name>`.** "
+                        f"{FRAME_ORDER_NOTE}", "", *short_entries]
+    listing = work / "frames.md"
+    write_report_file(listing, "\n".join(full_entries) + "\n")
+    return lines + [f"**{len(frames)} frames are listed with full paths in `{listing}`.** Read that list, then "
+                    f"read each frame with your image-viewing tool. {FRAME_ORDER_NOTE}"]
+
+
+def write_transcript_parts(segments: list[dict], folder: Path, note: str,
+                           limit: int = TRANSCRIPT_PART_LIMIT) -> list[dict]:
+    """Split the transcript at segment boundaries into files of at most ``limit`` bytes,
+    counting the note and code fence around each part (a single segment longer than that
+    gets a part of its own)."""
+    wrapper = utf8_size(f"{note} Part 999 of 999.\n\n```\n\n```\n")
+    groups, current, size = [], [], wrapper
+    for segment in segments:
+        added = utf8_size(format_transcript([segment])) + 1
+        if current and size + added > limit:
+            groups.append(current)
+            current, size = [], wrapper
+        current.append(segment)
+        size += added
+    if current:
+        groups.append(current)
+    folder.mkdir(parents=True, exist_ok=True)
+    parts = []
+    for number, group in enumerate(groups, 1):
+        path = folder / f"part-{number:02d}.md"
+        write_report_file(path, f"{note} Part {number} of {len(groups)}.\n\n```\n{format_transcript(group)}\n```\n")
+        parts.append({"path": path, "start": group[0]["start"], "end": group[-1]["end"]})
+    return parts
 
 
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
@@ -102,10 +178,11 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
     ap.add_argument(
         "--detail",
-        choices=["transcript", "efficient", "balanced", "token-burner"],
+        choices=["transcript", "efficient", "balanced", "talk", "token-burner"],
         default=None,
         help="Fidelity/speed dial: transcript (no frames), efficient (fast keyframes, cap 50), "
-             "balanced (scene, cap 100), token-burner (scene, uncapped).",
+             "balanced (scene, cap 100), talk (scene, cap 300: every slide of a long talk), "
+             "token-burner (scene, uncapped).",
     )
     ap.add_argument(
         "--timestamps",
@@ -296,128 +373,127 @@ def main() -> int:
 
     info = dl.get("info") or {}
 
-    print()
-    print("# watch: video report")
-    print()
-    print(f"- **Source:** {args.source}")
-    if video_path:
-        print(f"- **Local media:** `{video_path}`")
-    if visual_error:
-        print(f"- **Visual status:** {visual_error}")
-    if errors:
-        print("- **Result:** partial evidence" if frames or transcript_segments else "- **Result:** unavailable evidence")
-    if info.get("title"):
-        print(f"- **Title:** {info['title']}")
-    if info.get("uploader"):
-        print(f"- **Uploader:** {info['uploader']}")
-    print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
-    if focused:
-        print(
-            f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
-            f"({effective_duration:.1f}s)"
-        )
-    if meta.get("width") and meta.get("height"):
-        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
-    range_mode = "focused" if focused else "full"
-    print(f"- **Detail:** {detail}")
-    detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
-        cap_label = "unlimited" if detail_budget is None else str(detail_budget)
-        engine = frame_meta.get("engine", "scene")
-        fallback = " fallback" if frame_meta.get("fallback") else ""
-        deduped = frame_meta.get("deduped_count", 0)
-        dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
-        print(
-            f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
-            f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
-        )
-    elif not cue_frames:
-        print("- **Frames:** skipped (transcript detail)")
-    if cue_frames:
-        dropped = cue_meta.get("dropped_out_of_window", 0)
-        drop_note = f", {dropped} dropped outside range" if dropped else ""
-        print(
-            f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
-            f"(transcript-cue{drop_note})"
-        )
-    if frames:
-        print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
-    if transcript_segments:
-        in_range = " in range" if focused else ""
-        print(
-            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
-            f"(via {transcript_source or 'captions'})"
-        )
-    else:
-        print(f"- **Transcript:** {transcript_state}")
-    if gaps:
-        print("- **Transcript status:** partial; missing intervals:")
-        for gap in gaps:
-            end = gap["end"] if gap["end"] is not None else full_duration
-            print(f"  - {format_time(gap['start'])} → {format_time(end)}")
-
-    if detail == "token-burner" and len(frames) > 250:
+    with contextlib.redirect_stdout(io.StringIO()) as header_buf:
         print()
-        print(
-            f"> **Warning:** token-burner detail selected {len(frames)} frames. "
-            "This may use a large number of image tokens."
-        )
-
-    if not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
-        mins = int(full_duration // 60)
+        print("# watch: video report")
         print()
-        print(
-            f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length "
-            f"under `{detail}` detail — its cap spreads thin across the full clip. For better results, "
-            "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
-            "`--detail token-burner` to keep every scene-change frame across the whole video."
-        )
-
-    print()
-    print("## Frames")
-    print()
-    if frames:
-        print(f"Frames live at: `{work / 'frames'}`")
-        print()
-        print(
-            "**Read each frame path below with the Read tool to view the image.** "
-            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-        )
-        print()
-        for frame in frames:
+        print(f"- **Source:** {args.source}")
+        if video_path:
+            print(f"- **Local media:** `{video_path}`")
+        if visual_error:
+            print(f"- **Visual status:** {visual_error}")
+        if errors:
+            print("- **Result:** partial evidence" if frames or transcript_segments else "- **Result:** unavailable evidence")
+        if info.get("title"):
+            print(f"- **Title:** {info['title']}")
+        if info.get("uploader"):
+            print(f"- **Uploader:** {info['uploader']}")
+        print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
+        if focused:
             print(
-                f"- `{frame['path']}` "
-                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
+                f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
+                f"({effective_duration:.1f}s)"
             )
-    else:
-        print("_No frames extracted._")
+        if meta.get("width") and meta.get("height"):
+            print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
+        range_mode = "focused" if focused else "full"
+        print(f"- **Detail:** {detail}")
+        detail_count = frame_meta.get("selected_count", 0)
+        if detail != "transcript":
+            cap_label = "unlimited" if detail_budget is None else str(detail_budget)
+            engine = frame_meta.get("engine", "scene")
+            fallback = " fallback" if frame_meta.get("fallback") else ""
+            deduped = frame_meta.get("deduped_count", 0)
+            dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
+            print(
+                f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
+                f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
+            )
+        elif not cue_frames:
+            print("- **Frames:** skipped (transcript detail)")
+        if cue_frames:
+            dropped = cue_meta.get("dropped_out_of_window", 0)
+            drop_note = f", {dropped} dropped outside range" if dropped else ""
+            print(
+                f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
+                f"(transcript-cue{drop_note})"
+            )
+        if frames:
+            print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+        if transcript_segments:
+            in_range = " in range" if focused else ""
+            print(
+                f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
+                f"(via {transcript_source or 'captions'})"
+            )
+        else:
+            print(f"- **Transcript:** {transcript_state}")
+        if gaps:
+            print("- **Transcript status:** partial; missing intervals:")
+            for gap in gaps:
+                end = gap["end"] if gap["end"] is not None else full_duration
+                print(f"  - {format_time(gap['start'])} → {format_time(end)}")
 
-    print()
-    print("## Transcript")
-    print()
+        if detail == "token-burner" and len(frames) > 250:
+            print()
+            print(
+                f"> **Warning:** token-burner detail selected {len(frames)} frames. "
+                "This may use a large number of image tokens."
+            )
+
+        kept_after_dedup = frame_meta.get("candidate_count", 0) - frame_meta.get("deduped_count", 0)
+        thinned = kept_after_dedup > frame_meta.get("selected_count", 0)
+        sparse = detail in ("efficient", "balanced") or (detail == "talk" and thinned)
+        if not focused and full_duration > 600 and sparse:
+            mins = int(full_duration // 60)
+            print()
+            print(
+                f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length "
+                f"under `{detail}` detail — its cap spreads thin across the full clip. For better results, "
+                "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, "
+                + ("" if detail == "talk" else
+                   "use `--detail talk` to keep up to 300 scene-change frames (every slide of most talks), ")
+                + "or use `--detail token-burner` to keep every scene-change frame across the whole video."
+            )
+
+    header = header_buf.getvalue().rstrip("\n")
+    missing = []
+    source_note = None
     if transcript_text:
         label = transcript_source or "captions"
-        if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
-        else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
+        source_note = (f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_"
+                       if focused else f"_Source: {label}._")
+        write_report_file(work / "transcript.md", f"{source_note}\n\n{transcript_text}\n")
     else:
-        print(f"_{transcript_state.capitalize()}._")
+        missing = [f"_{transcript_state.capitalize()}._"]
         if detail == "transcript" and not track_available:
-            print("_Re-run with `--detail balanced` for visual evidence, or configure a transcription backend with setup.py._")
+            missing.append("_Re-run with `--detail balanced` for visual evidence, or configure a transcription backend with setup.py._")
+    tail = []
     if errors:
-        print()
-        print("## Unavailable evidence")
-        for error in errors:
-            print(f"- {error}")
+        tail += ["", "## Unavailable evidence", *(f"- {error}" for error in errors)]
+    tail += ["", "---", f"_Work dir: `{work}` — delete when done._"]
 
-    print()
-    print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    full = [header, "", *frame_lines(frames, work), "", "## Transcript", ""]
+    full += [source_note, "", "```", transcript_text, "```"] if transcript_text else missing
+    full_text = "\n".join(full + tail) + "\n"
+    report_path = work / "report.md"
+    write_report_file(report_path, full_text)
+    if utf8_size(full_text) <= STDOUT_LIMIT:
+        print(full_text, end="")
+    else:
+        short = [header, "", f"> **Note:** The full report is {utf8_size(full_text) // 1024} KB, too large for one tool "
+                 f"result, so it is saved at `{report_path}` and this shorter version points to files instead. "
+                 "Read the frames and every transcript part it lists; open report.md or transcript.md "
+                 "only to search them.", "", *frame_lines(frames, work, compact=True), "", "## Transcript", ""]
+        if transcript_text:
+            parts = write_transcript_parts(transcript_segments, work / "transcript", source_note)
+            short += [source_note, "",
+                      f"The transcript is {utf8_size(transcript_text) // 1024} KB, so it is split into {len(parts)} "
+                      "parts. Read every part, in order, with your file-reading tool:", ""]
+            short += [f"- `{part['path']}` ({format_time(part['start'])} → {format_time(part['end'])})" for part in parts]
+        else:
+            short += missing
+        print("\n".join(short + tail))
 
     return 1 if errors and not frames and not transcript_segments and not track_available else 0
 

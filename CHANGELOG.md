@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased] — fork changes
+
+### Added
+- `--detail talk` keeps scene-change frames up to a cap of 300, for long slide talks. The long-video warning suggests it, and `SKILL.md` describes a transcript-first workflow for talks and lectures.
+
+### Changed
+- The full report is always saved as `report.md` (and the transcript as `transcript.md`) in the work dir. A report over 20 KB is printed as a shorter version. It names frame files relative to the frames folder, or lists them in `frames.md` when the list is long, and splits the transcript into `transcript/part-NN.md` files of at most 40 KB.
+
+### Fixed
+- YouTube's rolling automatic captions no longer repeat each line in the transcript. The carried-over first line of each cue and the ~10 ms snapshot cues are dropped; ordinary repeated speech is still kept.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed

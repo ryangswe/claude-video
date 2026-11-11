@@ -2,6 +2,16 @@
 
 Give an agent video evidence: a URL or local file becomes timestamped frames and a transcript. Install it in Claude Code (the desktop app, VS Code, or a terminal), or use it with Codex and other [Agent Skills](https://agentskills.io) hosts. Native captions come first; optional local WhisperX or Groq/OpenAI transcription handles videos without captions.
 
+## About this fork
+
+This is a fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video) by Bradley Bonanno, under the same MIT license. It changes how long videos are handled:
+
+- **Reports that fit the agent's tool output.** Claude Code keeps only a 2 KB preview of command output past about 25 KB, and the report for a 15-minute video is already larger. The full report is now saved as `report.md`. A long report is printed as a shorter version that points to a frame list and to the transcript split into parts, each small enough to read in one call.
+- **YouTube automatic captions without repeats.** Rolling captions repeat each line two or three times in the raw file. The transcript now keeps each line once.
+- **A `talk` detail level.** It keeps up to 300 scene-change frames, enough for every slide of most long talks. The skill reads the transcript first and then picks frames.
+
+To install this fork, use `https://github.com/ryangswe/claude-video` (or `ryangswe/claude-video` in plugin commands) wherever the instructions below say `bradautomates/claude-video`. The plugin and marketplace names are unchanged, so remove an installed copy of the original first.
+
 ## Choose your app
 
 **Using Claude? Run Watch in Claude Code.** Install it through Claude Desktop and use a **Code** session, or add it with the plugin commands in VS Code or a terminal. Watch does **not** work in Claude Chat or Cowork; [see why](#chat-cowork-and-browser-apps).
@@ -252,6 +262,7 @@ Local inference has no default timeout; `WATCH_WHISPERX_TIMEOUT` accepts positiv
 | `transcript` | Transcript only; cue frames can be requested explicitly | No regular frames |
 | `efficient` | Fast keyframes; uniform fallback when sparse | 50 |
 | `balanced` | Scene changes; uniform fallback on nearly static clips | 100 |
+| `talk` | Scene changes, for long slide talks; read the transcript first | 300 |
 | `token-burner` | Scene changes without a count cap; warning above 250 | Uncapped |
 
 Use `WATCH_DETAIL` for the saved preference or `--detail` for one run. The `/watch` examples below are shorthand: in Claude Code plugins, select `/watch:watch`; in other hosts, ask the watch skill to apply the same options. Best accuracy is usually with videos under 10 minutes or a focused interval:

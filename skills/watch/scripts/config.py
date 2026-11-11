@@ -11,7 +11,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / '.config' / 'watch'
 CONFIG_FILE = CONFIG_DIR / '.env'
 DEFAULT_DETAIL = 'balanced'
-DETAILS = {'transcript', 'efficient', 'balanced', 'token-burner'}
+DETAILS = {'transcript', 'efficient', 'balanced', 'talk', 'token-burner'}
 BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'none'}
 ENGINES = {'auto', 'gemini', 'local'}
 DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash'
@@ -171,4 +171,4 @@ def positive_number(value, name: str) -> float:
 
 
 def frame_cap(detail: str) -> int | None:
-    return {'efficient': 50, 'balanced': 100, 'token-burner': None, 'transcript': None}.get(detail, 100)
+    return {'efficient': 50, 'balanced': 100, 'talk': 300, 'token-burner': None, 'transcript': None}.get(detail, 100)
