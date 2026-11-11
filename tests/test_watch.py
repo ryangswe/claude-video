@@ -401,4 +401,3 @@ def test_talk_warns_only_when_the_cap_thins_frames(monkeypatch, tmp_path, capsys
     capped = _talk_run(monkeypatch, tmp_path, capsys,
                        {'candidate_count': 400, 'deduped_count': 0, 'selected_count': 300})
     assert 'Frame coverage is sparse' in capped and 'use `--detail talk`' not in capped
-
