@@ -2,7 +2,7 @@
 
 All notable changes to `/watch` are documented here.
 
-## [Unreleased] — fork changes
+## [0.4.0] — 2026-11-10 — fork release
 
 ### Added
 - A `whispercpp` transcription backend: whisper.cpp with Silero voice activity detection, on the GPU on Apple Silicon Macs. `setup.py --install-whispercpp` installs it with Homebrew and downloads checksum-verified models. On a 74-minute test with long silences it was 2.5 times faster than WhisperX `small` (143 s against 356 s) with 3.7% word errors against 5.6%, and invented no text. Per-word output is regrouped into sentences. whisper.cpp stretches one word across each silence, and the regrouping detects that, so in the test the speech after each silence started within about a second of its real time instead of up to two minutes early. Languages written without spaces get a slower per-character allowance so their phrases keep their start times. The first-run wizard recommends it on Apple Silicon.
