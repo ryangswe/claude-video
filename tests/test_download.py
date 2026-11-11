@@ -155,3 +155,64 @@ def test_actual_ytdlp_exact_track_with_inherited_all(monkeypatch, tmp_path, stat
 def test_explicit_regional_language_is_not_silently_replaced():
     assert download.select_caption({'subtitles': _tracks('en-US')}, 'en-GB') is None
     assert download.select_caption({'subtitles': _tracks('en-US')}, 'en')['key'] == 'en-US'
+
+
+@pytest.mark.parametrize('resolution,width', [(2, 854), (512, 854), (640, 854), (641, 1280), (1024, 1280),
+                                              (1280, 1280), (1281, 1920)])
+def test_source_width_covers_the_frames(resolution, width):
+    assert download.source_width(resolution) == width
+
+
+def test_media_download_sorts_by_width_and_gemini_keeps_the_720p_cap(monkeypatch, tmp_path):
+    calls = _fake_stages(monkeypatch)
+    def media(name, **kw):
+        (tmp_path / name).mkdir()
+        download.download_url(URL, tmp_path, context={'run_dir': str(tmp_path / name), 'info': {'title': 'test'}}, **kw)
+        return calls[-1]
+    cmd = media('frames', max_width=854)
+    assert cmd[cmd.index('-f') + 1] == 'bv*[height>0]+ba/b[height>0]/bv*+ba/b'
+    assert cmd[cmd.index('-S') + 1] == 'width:939,res:480'
+    cmd = media('gemini')
+    assert '-S' not in cmd and cmd[cmd.index('-f') + 1] == 'bv*[height<=720]+ba/b[height<=720]/bv+ba/b'
+    cmd = media('audio', audio_only=True, max_width=854)
+    assert '-S' not in cmd and cmd[cmd.index('-f') + 1] == 'ba/bestaudio'
+
+
+def test_actual_ytdlp_picks_and_merges_the_source_size(monkeypatch, tmp_path):
+    """The installed CLI, offline, with separate video and audio formats."""
+    import shutil
+    if not shutil.which('yt-dlp'):
+        pytest.skip('yt-dlp required for offline CLI acceptance')
+    def clip(name, *inputs):
+        path = tmp_path / name
+        if not path.exists():
+            subprocess.run(['ffmpeg', '-v', 'error', *inputs, '-t', '0.3', str(path)], check=True)
+        return path.as_uri()
+    def video(w, h, sized=True):
+        url = clip(f'{w}x{h}.mp4', '-f', 'lavfi', '-i', f'color=c=blue:s={w}x{h}', '-c:v', 'libx264', '-pix_fmt', 'yuv420p')
+        return {'format_id': f'{w}x{h}' if sized else 'unsized', 'url': url, 'ext': 'mp4', 'vcodec': 'avc1',
+                'acodec': 'none', **({'width': w, 'height': h} if sized else {})}
+    audio = {'format_id': 'audio', 'url': clip('audio.m4a', '-f', 'lavfi', '-i', 'sine', '-c:a', 'aac'),
+             'ext': 'm4a', 'vcodec': 'none', 'acodec': 'mp4a.40.2'}
+    user_cfg = Path.home() / '.config' / 'yt-dlp'
+    user_cfg.mkdir(parents=True)
+    user_cfg.joinpath('config').write_text('--enable-file-urls\n', encoding='utf-8')
+    cases = [([video(640, 360), video(854, 480), video(1280, 720)], 854, (854, 480)),
+             ([video(640, 360), video(854, 480), video(1280, 720)], 1280, (1280, 720)),
+             ([video(480, 854), video(720, 1280), video(1080, 1920)], 854, (720, 1280)),
+             ([video(256, 144, sized=False), video(1280, 720), video(1920, 1080)], 854, (1280, 720)),
+             ([video(666, 360), video(888, 480), video(1332, 720)], 854, (888, 480)),
+             ([video(856, 480), video(1288, 720), video(1928, 1080)], 1280, (1288, 720))]
+    for i, (formats, max_width, expected) in enumerate(cases):
+        info = tmp_path / f'case{i}.info.json'
+        info.write_text(json.dumps({'id': f'case{i}', 'title': 'Offline', 'extractor': 'generic', 'extractor_key': 'Generic',
+                                    'webpage_url': URL, 'formats': [*formats, audio]}))
+        run = tmp_path / f'run{i}'
+        run.mkdir()
+        result = download.download_url(URL, tmp_path, max_width=max_width, context={
+            'run_dir': str(run), 'info_path': str(info), 'info': {'title': 'Offline'}})
+        probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type,width,height', '-of', 'json',
+                                result['video_path']], capture_output=True, text=True, check=True)
+        streams = json.loads(probe.stdout)['streams']
+        assert [(st['width'], st['height']) for st in streams if st['codec_type'] == 'video'] == [expected], (i, streams)
+        assert any(st['codec_type'] == 'audio' for st in streams)

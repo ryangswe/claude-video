@@ -381,3 +381,23 @@ def test_talk_warns_only_when_the_cap_thins_frames(monkeypatch, tmp_path, capsys
     capped = _talk_run(monkeypatch, tmp_path, capsys,
                        {'candidate_count': 400, 'deduped_count': 0, 'selected_count': 300})
     assert 'Frame coverage is sparse' in capped and 'use `--detail talk`' not in capped
+
+
+def test_url_frames_download_the_source_width_and_scene_pass_gets_the_width(monkeypatch, tmp_path):
+    _caption_context(monkeypatch, tmp_path, '00:00.000 --> 00:10.000\nhello\n')
+    seen = {}
+    def download(*a, **kw):
+        seen['download'] = kw
+        return {'video_path': 'video.mp4'}
+    def scene(*a, **kw):
+        seen['scene'] = kw
+        return [], {'engine': 'scene', 'candidate_count': 0, 'deduped_count': 0, 'selected_count': 0, 'fallback': False}
+    monkeypatch.setattr(watch, 'download', download)
+    monkeypatch.setattr(watch, 'get_metadata', lambda *a: {'duration_seconds': 30, 'width': 1920, 'height': 1080,
+                                                           'codec': 'h264', 'has_audio': True, 'has_video': True})
+    monkeypatch.setattr(watch, 'extract_scene_or_uniform', scene)
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--resolution', '1024',
+                                      '--out-dir', str(tmp_path / 'out')])
+    assert watch.main() == 0
+    assert seen['download']['max_width'] == 1280
+    assert seen['scene']['source_width'] == 1920 and seen['scene']['resolution'] == 1024

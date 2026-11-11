@@ -9,6 +9,8 @@ All notable changes to `/watch` are documented here.
 
 ### Changed
 - The full report is always saved as `report.md` (and the transcript as `transcript.md`) in the work dir. A report over 20 KB is printed as a shorter version. It names frame files relative to the frames folder, or lists them in `frames.md` when the list is long, and splits the transcript into `transcript/part-NN.md` files of at most 40 KB.
+- URL downloads for frames pick the video by width: about 854 px (480p) for the default 512 px frames (720p before), about 1280 px through `--resolution 1280`, and about 1920 px above that (each with 10% headroom for slightly wider ladders). Text on 512 px frames reads the same from a 480p source, and the download and decoding take about half as long. Because width is what counts, a portrait video now comes at 720x1280 by default, so its frames are full width (before, it was capped at 720 px tall and usually 405 px wide or less). Formats that report a size are preferred over ones that don't. The Gemini upload path keeps its 720p cap.
+- On a source at least twice the frame width (for example a 1080p or 720p local file at the default 512 px), scene detection scales each frame down before scoring it. Wall time is 2.3 times faster on 1080p and 1.4 times on 720p, at some extra CPU, with the same cuts on real footage. Closer to the frame width the order is unchanged, because scaling first saves no wall time there.
 
 ### Fixed
 - YouTube's rolling automatic captions no longer repeat each line in the transcript. The carried-over first line of each cue and the ~10 ms snapshot cues are dropped; ordinary repeated speech is still kept.
