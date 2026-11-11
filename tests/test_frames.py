@@ -140,3 +140,19 @@ def test_single_frame_cap_keeps_first_real_frame(static_clip, tmp_path):
 def test_uniform_candidate_count_includes_deduplicated_frames(static_clip, tmp_path):
     out, meta = frames.extract_scene_or_uniform(str(static_clip), tmp_path / 'f', fps=2, target_frames=6)
     assert meta['candidate_count'] == len(out) + meta['deduped_count']
+
+
+@pytest.mark.parametrize('source_width,scaled_first', [(None, False), (1000, False), (1024, True), (1920, True)])
+def test_scene_pass_scales_first_only_for_sources_twice_the_frame_width(monkeypatch, tmp_path, source_width, scaled_first):
+    import subprocess
+    seen = []
+    real = frames.run_text
+    def run(cmd, **kw):
+        if '-vf' not in cmd:
+            return real(cmd, **kw)
+        seen.append(cmd[cmd.index('-vf') + 1])
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(frames, 'run_text', run)
+    frames.extract_scene_candidates('video.mp4', tmp_path, resolution=512, source_width=source_width)
+    vf = seen[0]
+    assert vf.startswith('scale=') is scaled_first and vf.endswith('showinfo')

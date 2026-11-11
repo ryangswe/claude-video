@@ -23,7 +23,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import ConfigError, frame_cap, get_config, load_gemini_key, resolve_engine  # noqa: E402
 import gemini  # noqa: E402
-from download import download, fetch_captions, is_url, auth_args  # noqa: E402
+from download import download, fetch_captions, is_url, auth_args, source_width  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -278,7 +278,8 @@ def main() -> int:
         try:
             print("[watch] downloading media…" if url_source else "[watch] using local file…", file=sys.stderr)
             media = download(args.source, work / "download", audio_only=audio_only,
-                             **({"context": dl, **auth} if url_source else {}))
+                             **({"context": dl, "max_width": source_width(args.resolution), **auth}
+                                if url_source else {}))
             dl.update(media)
             video_path = dl["video_path"]
         except SystemExit as exc:
@@ -331,7 +332,8 @@ def main() -> int:
                 if detail == "efficient":
                     frames, frame_meta = extract_keyframes(video_path, work / "frames", **kwargs)
                 else:
-                    frames, frame_meta = extract_scene_or_uniform(video_path, work / "frames", fps=fps, target_frames=target, **kwargs)
+                    frames, frame_meta = extract_scene_or_uniform(video_path, work / "frames", fps=fps, target_frames=target,
+                                                                  source_width=meta.get("width"), **kwargs)
         except SystemExit as exc:
             visual_error = f"Visual extraction unavailable: {exc}"
             errors.append(visual_error)

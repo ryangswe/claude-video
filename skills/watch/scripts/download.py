@@ -162,15 +162,37 @@ def fetch_captions(url: str, out_dir: Path, *, sub_lang='auto', cookies_file=Non
     return result
 
 
+def source_width(resolution: int) -> int:
+    """Width of the video to download for frames ``resolution`` pixels wide: 854 (480p),
+    1280 (720p) or 1920 (1080p).
+
+    Text on 512-px frames reads the same from a 480p source as from 720p, and 480p is about
+    half the download and half the decoding.
+    """
+    return 854 if resolution <= 640 else 1280 if resolution <= 1280 else 1920
+
+
 def download_url(url: str, out_dir: Path, audio_only: bool = False, *, context=None,
-                 cookies_file=None, cookies_from_browser=None) -> dict:
+                 cookies_file=None, cookies_from_browser=None, max_width: int | None = None) -> dict:
     auth = auth_args(cookies_file, cookies_from_browser)
     context = context or {}
     run = Path(context['run_dir']) if context.get('run_dir') else _new_run(out_dir)
     record = run / 'final-path.jsonl'
     record.unlink(missing_ok=True)
-    fmt = 'ba/bestaudio' if audio_only else 'bv*[height<=720]+ba/b[height<=720]/bv+ba/b'
-    cmd = [*_common(run, auth), '-N', '8', '-f', fmt, '--merge-output-format', 'mp4',
+    # The widest format up to max_width wins (with none that narrow, the narrowest wider one),
+    # so portrait videos are as wide as landscape ones. 10% headroom keeps ladders slightly
+    # wider than 16:9 (856x480, 888x480 at 1.85:1) on the same step. Ties go to the shorter
+    # side up to the matching 16:9 height. A format with no size information would sort as the smallest, so
+    # formats that report a height come first.
+    # Without max_width (the Gemini upload), keep the plain 720p cap.
+    if audio_only:
+        fmt = ['-f', 'ba/bestaudio']
+    elif max_width is None:
+        fmt = ['-f', 'bv*[height<=720]+ba/b[height<=720]/bv+ba/b']
+    else:
+        fmt = ['-f', 'bv*[height>0]+ba/b[height>0]/bv*+ba/b',
+               '-S', f'width:{int(max_width) * 11 // 10},res:{int(max_width) * 9 // 16}']
+    cmd = [*_common(run, auth), '-N', '8', *fmt, '--merge-output-format', 'mp4',
            '--no-ignore-errors', '--no-write-subs', '--no-write-auto-subs', '--write-info-json',
            '--print-to-file', 'after_move:%(filepath)j', str(record).replace('%', '%%')]
     if context.get('info_path'):
