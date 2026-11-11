@@ -1,7 +1,9 @@
 """Subprocess-only whisper.cpp adapter: GPU (Metal) on Apple Silicon, CPU elsewhere.
 
 whisper.cpp runs Silero voice activity detection first, so long silences and music do
-not turn into invented text. It reports one entry per word; the words are regrouped
+not turn into invented text. It also starts each 30-second window without the text before
+it (-mc 0): with that text, a long talk fell into loops that repeated one sentence dozens
+of times, at different places on different runs. It reports one entry per word; the words are regrouped
 into sentence-sized segments here. Around a silence, whisper.cpp stretches one word
 across the gap, so an entry much longer than its text needs to be spoken marks a
 boundary. In scripts written without spaces (Chinese, Japanese, Thai...) an entry is a
@@ -90,7 +92,7 @@ def command(executable: Path, audio: Path, output_base: Path, cfg: dict) -> list
     threads = str(max(1, min(8, os.cpu_count() or 4)))
     return [str(executable), '-m', str(model_path(cfg['whispercpp_model'])), '-f', str(audio.resolve()),
             '-oj', '-of', str(output_base), '-l', cfg['whispercpp_language'] or 'auto', '-t', threads, '-np',
-            '--vad', '-vm', str(vad_path()), '-ml', '1', '-sow']
+            '--vad', '-vm', str(vad_path()), '-ml', '1', '-sow', '-mc', '0']
 
 
 def regroup(words: list[tuple[float, float, str]]) -> list[dict]:

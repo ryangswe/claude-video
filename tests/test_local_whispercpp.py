@@ -61,6 +61,7 @@ mode = os.environ.get('WATCH_TEST_MODE', 'good')
 if mode == 'slow': time.sleep(10)
 args = sys.argv
 assert '--vad' in args and args[args.index('-ml') + 1] == '1' and '-sow' in args
+assert args[args.index('-mc') + 1] == '0'  # no carried text, so no repetition loops
 assert pathlib.Path(args[args.index('-vm') + 1]).name == 'ggml-silero-v5.1.2.bin'
 print('[00:00:00.000 --> 00:00:01.000]   a whole transcript line printed to stdout')
 if mode == 'crash':
