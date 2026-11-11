@@ -1,6 +1,6 @@
 ---
 name: watch
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or local WhisperX / cloud Whisper fallback), and hands the result to the agent so it can answer questions about what's in the video. With a Gemini API key, Google's agentic video model watches the full video instead.
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or local whisper.cpp / WhisperX / cloud Whisper fallback), and hands the result to the agent so it can answer questions about what's in the video. With a Gemini API key, Google's agentic video model watches the full video instead.
 license: MIT
 allowed-tools: Bash, Read, AskUserQuestion
 metadata:
@@ -33,7 +33,7 @@ python3 "${SKILL_DIR}/scripts/setup.py" --json
 
 - `can_proceed` depends on base binaries for the local engine, not optional credentials. If it is false, run `setup.py` and confirm the binaries become available. macOS uses Homebrew; other systems get package commands. Do not use sudo automatically. With the Gemini engine (`engine` is `gemini`, `binaries_required` false), missing `ffmpeg`/`yt-dlp` do not block YouTube URLs but are still needed for other URLs and for `--engine local`; mention `missing_binaries` only when that matters.
 - If `first_run` is false, proceed without announcing successful setup or asking preferences again. Existing installations without a backend setting retain `auto` (Groq key first, then OpenAI).
-- If `first_run` is true, ask the engine question first, then (local engine only) the two choices below it. The wizard does not inspect RAM, disk, CPU, browser sessions, or other machine state; the user decides from the stated requirements.
+- If `first_run` is true, ask the engine question first, then (local engine only) the two choices below it. The wizard does not inspect RAM, disk, browser sessions, or other machine state; it reads only `platform` and `machine` from `setup.py --json` to name the local backend, and the user decides from the stated requirements.
 
 **Question 1 — "How should watch view videos?"**
 
@@ -66,7 +66,7 @@ If the detail question is skipped, retain `balanced`.
 
 Then ask: **For videos without captions, how should watch transcribe?** Present:
 
-1. `whisperx` (recommended): local transcription, no API key; audio stays on the machine. One-time download of about 1.5 GB. Requires 3 GB free disk, 8 GB RAM, and a compatible 64-bit CPU. Apple Silicon macOS is verified; Linux/Windows recipes and Intel macOS are untested.
+1. Local (recommended): no API key; audio stays on the machine. On an Apple Silicon Mac this is `whispercpp`: whisper.cpp on the GPU, installed with Homebrew, about 2.5 times faster than `whisperx` on long recordings and more accurate, with a one-time download of about 1.6 GB. Elsewhere it is `whisperx`: a one-time download of about 1.5 GB that needs 3 GB free disk, 8 GB RAM, and a compatible 64-bit CPU (Linux/Windows recipes and Intel macOS are untested). `setup.py --json` reports `platform` and `machine`; choose `whispercpp` when they are `Darwin` and `arm64`.
 2. `groq`: fast cloud transcription, needs a Groq key.
 3. `openai`: cloud transcription, needs an OpenAI key.
 4. `none`: captions only; no speech fallback.
@@ -76,15 +76,17 @@ Use an existing explicit backend choice without asking again. Do not treat silen
 Complete the selected setup using the user's detail value:
 
 ```bash
-python3 "${SKILL_DIR}/scripts/setup.py" --backend whisperx --detail balanced
-# Or: --backend groq / openai / none
+python3 "${SKILL_DIR}/scripts/setup.py" --backend whispercpp --detail balanced
+# Or: --backend whisperx / groq / openai / none
 ```
+
+For whisper.cpp, relay progress while the installer runs `brew install whisper.cpp` if `whisper-cli` is missing, then downloads the model and a 1 MB voice activity model and checks their SHA-256 checksums. `setup.py --install-whispercpp` reruns it. It works on other systems when `whisper-cli` is already on PATH, but only Apple Silicon macOS is verified.
 
 For WhisperX, relay progress while the installer provisions uv, Python 3.12, pinned dependencies, and both model caches. `setup.py --install-whisperx` reruns this managed installer if needed. It writes the backend, executable, model, and completion marker only after warm-up succeeds. A failed local installation never selects a cloud backend automatically.
 
 For cloud, get the matching key the same way as the Gemini key (pasted in chat, or the user adds it after offering to open the config file), then rerun `setup.py --backend groq` or `--backend openai`. Preserve existing keys and comments; do not print keys or include them in a shell command. The script marks setup complete after that backend is ready. `--backend none` needs no key and completes immediately.
 
-`setup.py --check` is a fast, silent base preflight: exit 0 when binaries exist (or the Gemini engine is active), 2 for missing dependencies/config errors. It never starts Torch or queries network services. `--json` adds `engine` (resolved: `gemini` or `local`), `configured_engine`, `gemini_key_present` (boolean only), `gemini_model`, `binaries_required`, executable paths/versions, offline yt-dlp capability diagnostics, and `whisperx_ready`, `whisperx_bin`, `whisperx_model`, and `backend_ready`. Local readiness in detailed mode checks the sentinel and executable help. Optional fallback failure does not block base watch.
+`setup.py --check` is a fast, silent base preflight: exit 0 when binaries exist (or the Gemini engine is active), 2 for missing dependencies/config errors. It never starts Torch or queries network services. `--json` adds `engine` (resolved: `gemini` or `local`), `configured_engine`, `gemini_key_present` (boolean only), `gemini_model`, `binaries_required`, executable paths/versions, offline yt-dlp capability diagnostics, `whisperx_ready`, `whisperx_bin`, `whisperx_model`, `whispercpp_ready`, `whispercpp_bin`, `whispercpp_model`, and `backend_ready`. Local readiness in detailed mode checks the sentinel and executable help. Optional fallback failure does not block base watch.
 
 ## Watch and answer
 
@@ -116,7 +118,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--resolution W` | Frame width, default 512; raise to 1024 for text when needed |
 | `--fps F` | Positive uniform rate override, at most 2 fps and reduced to fit the remaining cap |
 | `--no-dedup` | Preserve near-identical selected frames |
-| `--whisper groq|openai|whisperx` | Select this run's fallback; captions still come first |
+| `--whisper groq|openai|whisperx|whispercpp` | Select this run's fallback; captions still come first |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
 | `--sub-lang CODE` | Select one exact caption language; default `auto` prefers original-language evidence |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |
@@ -155,7 +157,9 @@ For a presenter saying “look here,” “notice this,” or similar:
 
 Full-track caption availability is checked before focus filtering. A silent focus interval does not trigger another transcription request. Reports distinguish no speech, disabled fallback, failed modalities, and missing cloud-chunk intervals.
 
-`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
+`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|whispercpp|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
+
+whisper.cpp defaults: `WATCH_WHISPERCPP_MODEL=large-v3-turbo` (or `small`), with Silero voice activity detection always on so silences and music do not become invented text. `WATCH_WHISPERCPP_LANGUAGE=es` (for example, a two- or three-letter Whisper code) gives a spoken-language hint; without one, whisper.cpp detects the language and the report names it. `WATCH_WHISPERCPP_TIMEOUT` optionally sets positive seconds.
 
 WhisperX defaults: `WATCH_WHISPERX_MODEL=small`, `WATCH_WHISPERX_DEVICE=cpu`, `WATCH_WHISPERX_COMPUTE_TYPE=int8`, `WATCH_WHISPERX_BATCH_SIZE=8`. No alignment or diarization is run. `WATCH_WHISPERX_LANGUAGE=es` (for example) gives a spoken-language hint; never infer it from `--sub-lang`, which may request a translation. Without a hint, auto-detection is used but reported as unverified because WhisperX 3.8.6 mislabels its JSON language when alignment is disabled.
 
@@ -172,9 +176,10 @@ For follow-ups, reuse evidence already viewed before rerunning. Remove only the 
 - yt-dlp contacts the source service/CDNs for metadata, one selected caption track, and media; access may require explicitly configured authentication. A cookie file is a read/write jar.
 - With the Gemini engine, YouTube URLs are sent to Google and local or downloaded videos are uploaded to Google's Files API (generativelanguage.googleapis.com), then deleted after the answer; an upload that cannot be deleted expires within 48 hours. The key is sent only as a request header. The local engine never contacts Google.
 - FFmpeg/ffprobe run locally for probing, frames, and mono audio extraction.
+- With `whispercpp` selected, audio never leaves the machine. Setup installs whisper.cpp with Homebrew and downloads two model files from Hugging Face into `~/.cache/watch/whispercpp`; inference runs offline.
 - With `whisperx` selected, audio never leaves the machine. First setup downloads packages and models from PyPI, Hugging Face, and GitHub, with uv/Python installers as needed. Pyannote telemetry is disabled. Warm caches allow offline inference; model libraries may still attempt cache/update network checks.
 - With `groq` or `openai` selected, only extracted audio is uploaded to that provider's transcription endpoint; keys are never shared between providers or logged by watch.
 - Runtime artifacts live in this run's working directory. User settings/keys live in `~/.config/watch/.env`; cwd `.env` is a cloud-key fallback. POSIX writes use mode 0600; Windows ACLs are not audited. Use a Linux-home config in WSL, since Windows-mounted homes have different permission semantics.
 - The managed environment lives at `~/.cache/watch/whisperx-venv`, outside the plugin. Model caches normally live at `~/.cache/huggingface` and `~/.cache/torch/hub`. uv also caches packages and managed Python. Reinstalling the skill does not remove these.
 
-Bundled scripts: `watch.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `local_whisperx.py`, `gemini.py`, `config.py`, `runtime.py`, and `setup.py` under `scripts/`. The base runtime uses only Python's standard library; optional WhisperX dependencies remain in its separate process/environment.
+Bundled scripts: `watch.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `local_whisperx.py`, `local_whispercpp.py`, `gemini.py`, `config.py`, `runtime.py`, and `setup.py` under `scripts/`. The base runtime uses only Python's standard library; optional WhisperX and whisper.cpp dependencies remain in their separate processes.
