@@ -68,12 +68,23 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def run_inference(cmd: list[str], timeout: float | None = None) -> None:
-    """Stream bounded byte diagnostics while enforcing an optional wall-clock timeout."""
+WHISPERX_MEMORY_HINT = ('Memory or device failure; use cpu/int8, a smaller model, or lower batch size. '
+                        'Small needs at least 8 GB system RAM.')
+# Transcript lines such as "[00:01:02.000 --> ...]" are speech, not error text.
+TRANSCRIPT_LINE = re.compile(r'^\[\d{2}:\d{2}')
+
+
+def run_inference(cmd: list[str], timeout: float | None = None, *, name: str = 'WhisperX',
+                  install: str = '--install-whisperx', timeout_var: str = 'WATCH_WHISPERX_TIMEOUT',
+                  echo: bool = True, memory_hint: str = WHISPERX_MEMORY_HINT) -> bytes:
+    """Stream bounded byte diagnostics while enforcing an optional wall-clock timeout, and
+    return the output tail. Shared by the local backends; ``name``, ``install``,
+    ``timeout_var`` and ``memory_hint`` word the errors. ``echo=False`` keeps a child that
+    prints its whole transcript quiet; the tail still goes into the failure message."""
     try:
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=child_env())
     except OSError as exc:
-        raise SystemExit(f'WhisperX executable is not runnable ({type(exc).__name__}); rerun setup.py --install-whisperx.') from None
+        raise SystemExit(f'{name} executable is not runnable ({type(exc).__name__}); rerun setup.py {install}.') from None
     messages = queue.Queue(maxsize=64)
     def read():
         try:
@@ -84,7 +95,7 @@ def run_inference(cmd: list[str], timeout: float | None = None) -> None:
     reader = threading.Thread(target=read, daemon=True)
     reader.start()
     deadline = time.monotonic() + timeout if timeout is not None else None
-    tail = b''
+    tail, truncated = b'', False
     try:
         while True:
             if deadline is not None and time.monotonic() >= deadline:
@@ -95,19 +106,21 @@ def run_inference(cmd: list[str], timeout: float | None = None) -> None:
                 continue
             if chunk is None:
                 break
-            tail = (tail + chunk)[-16000:]
-            text = diagnostic(chunk, 4096)
+            tail += chunk
+            if len(tail) > 16000:
+                tail, truncated = tail[-16000:], True
+            text = diagnostic(chunk, 4096) if echo else ''
             if text:
-                print(f'[whisperx] {text}', file=sys.stderr, flush=True)
+                print(f'[{name.lower()}] {text}', file=sys.stderr, flush=True)
         process.wait(timeout=max(0.01, deadline - time.monotonic()) if deadline is not None else None)
     except (TimeoutError, subprocess.TimeoutExpired):
         process.kill()
         process.wait()
-        raise SystemExit('WhisperX timed out and was stopped. Increase WATCH_WHISPERX_TIMEOUT or leave it unset.') from None
+        raise SystemExit(f'{name} timed out and was stopped. Increase {timeout_var} or leave it unset.') from None
     except KeyboardInterrupt:
         process.kill()
         process.wait()
-        raise SystemExit('WhisperX cancelled and stopped; no cloud fallback was attempted.') from None
+        raise SystemExit(f'{name} cancelled and stopped; no cloud fallback was attempted.') from None
     finally:
         # Drain queued diagnostics so the reader cannot remain blocked after cancellation.
         while reader.is_alive():
@@ -119,14 +132,17 @@ def run_inference(cmd: list[str], timeout: float | None = None) -> None:
         process.stdout.close()
     if process.returncode != 0:
         detail = diagnostic(tail)
-        lower = tail.decode('utf-8', errors='replace').lower()
+        lines = tail.decode('utf-8', errors='replace').lower().splitlines()
+        # A cut tail starts mid-line, often inside a transcript line that lost its timestamp.
+        lower = '\n'.join(line for line in lines[1 if truncated else 0:] if not TRANSCRIPT_LINE.match(line.strip()))
         if any(token in lower for token in ('out of memory', 'bad_alloc', 'cuda', 'cudnn', 'cublas')) or process.returncode in (-9, 137):
-            hint = 'Memory or device failure; use cpu/int8, a smaller model, or lower batch size. Small needs at least 8 GB system RAM.'
+            hint = memory_hint
         elif any(token in lower for token in ('huggingface', 'connection', 'offline', 'download', 'localentrynotfound')):
-            hint = 'Model download/cache failure; reconnect and rerun setup.py --install-whisperx to warm the caches.'
+            hint = f'Model download/cache failure; reconnect and rerun setup.py {install} to warm the caches.'
         else:
-            hint = 'Check the error below and rerun setup.py --install-whisperx if dependencies are broken.'
-        raise SystemExit(f'WhisperX failed (exit {process.returncode}). {hint}\n{detail}')
+            hint = f'Check the error below and rerun setup.py {install} if dependencies are broken.'
+        raise SystemExit(f'{name} failed (exit {process.returncode}). {hint}\n{detail}')
+    return tail
 
 
 def transcribe_audio(audio: Path, cfg=None, *, require_ready=True):

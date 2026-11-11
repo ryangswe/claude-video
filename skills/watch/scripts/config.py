@@ -12,7 +12,7 @@ CONFIG_DIR = Path.home() / '.config' / 'watch'
 CONFIG_FILE = CONFIG_DIR / '.env'
 DEFAULT_DETAIL = 'balanced'
 DETAILS = {'transcript', 'efficient', 'balanced', 'talk', 'token-burner'}
-BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'none'}
+BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'whispercpp', 'none'}
 ENGINES = {'auto', 'gemini', 'local'}
 DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash'
 
@@ -136,7 +136,7 @@ def get_config(*, backend_override: str | None = None) -> dict:
     detail = setting('WATCH_DETAIL', DEFAULT_DETAIL)
     backend = backend_override if backend_override is not None else setting('WATCH_WHISPER_BACKEND', 'auto')
     if backend not in BACKENDS:
-        raise ConfigError('WATCH_WHISPER_BACKEND must be auto, groq, openai, whisperx, or none.')
+        raise ConfigError('WATCH_WHISPER_BACKEND must be auto, groq, openai, whisperx, whispercpp, or none.')
     engine = setting('WATCH_ENGINE', 'auto')
     if engine not in ENGINES:
         raise ConfigError('WATCH_ENGINE must be auto, gemini, or local.')
@@ -157,6 +157,10 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'whisperx_batch_size': setting('WATCH_WHISPERX_BATCH_SIZE', '8'),
         'whisperx_language': setting('WATCH_WHISPERX_LANGUAGE'),
         'whisperx_timeout': setting('WATCH_WHISPERX_TIMEOUT'),
+        'whispercpp_bin': setting('WATCH_WHISPERCPP_BIN'),
+        'whispercpp_model': setting('WATCH_WHISPERCPP_MODEL', 'large-v3-turbo') or 'large-v3-turbo',
+        'whispercpp_language': setting('WATCH_WHISPERCPP_LANGUAGE'),
+        'whispercpp_timeout': setting('WATCH_WHISPERCPP_TIMEOUT'),
     }
 
 

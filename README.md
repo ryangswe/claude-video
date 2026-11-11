@@ -1,6 +1,6 @@
 # /watch
 
-Give an agent video evidence: a URL or local file becomes timestamped frames and a transcript. Install it in Claude Code (the desktop app, VS Code, or a terminal), or use it with Codex and other [Agent Skills](https://agentskills.io) hosts. Native captions come first; optional local WhisperX or Groq/OpenAI transcription handles videos without captions.
+Give an agent video evidence: a URL or local file becomes timestamped frames and a transcript. Install it in Claude Code (the desktop app, VS Code, or a terminal), or use it with Codex and other [Agent Skills](https://agentskills.io) hosts. Native captions come first; optional local whisper.cpp or WhisperX, or Groq/OpenAI transcription, handles videos without captions.
 
 ## About this fork
 
@@ -213,14 +213,28 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 
 | Backend | Requirements and behavior |
 |---|---|
-| `whisperx` | Recommended for transcription on a verified local machine. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
+| `whispercpp` | Recommended on Apple Silicon Macs. whisper.cpp on the GPU with voice activity detection; no API key. Setup installs it with Homebrew and downloads checksum-verified models (about 1.6 GB). |
+| `whisperx` | Recommended on other local machines. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
 | `groq` | Cloud `whisper-large-v3`; needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx|whispercpp` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
+
+### whisper.cpp on Apple Silicon
+
+Have the agent run the bundled `setup.py --install-whispercpp` (or `--backend whispercpp --detail balanced`). It runs `brew install whisper.cpp` when `whisper-cli` is missing, downloads the model (`large-v3-turbo` by default, or `small`) and the Silero voice activity model into `~/.cache/watch/whispercpp`, checks their SHA-256 checksums, and transcribes two seconds of silence as a warm-up. On another system it works when `whisper-cli` is already on PATH, but only Apple Silicon macOS is verified.
+
+Measured on an M3 Max against WhisperX `small` on the CPU, using LibriSpeech read speech with known transcripts:
+
+| Audio | whisper.cpp `large-v3-turbo` | WhisperX `small` |
+|---|---|---|
+| 8.7 minutes | 26 s, 3.1% word error rate | 39 s, 5.7% |
+| 74 minutes, with 60 s and 120 s silences and 60 s of noise | 143 s, 3.7%, no invented text | 356 s, 5.6% |
+
+Voice activity detection is always on. Without it, Whisper filled the long silences with invented words in the same test. whisper.cpp reports one entry per word and stretches one word across each silence. The skill regroups the words into sentences and detects the stretched word, so in the test a sentence after a silence started within about a second of its real time. Settings are `WATCH_WHISPERCPP_MODEL`, `WATCH_WHISPERCPP_LANGUAGE` (a two- or three-letter hint; otherwise detected and named in the report) and `WATCH_WHISPERCPP_TIMEOUT`.
 
 ### Managed WhisperX
 

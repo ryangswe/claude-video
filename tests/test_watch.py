@@ -381,3 +381,18 @@ def test_talk_warns_only_when_the_cap_thins_frames(monkeypatch, tmp_path, capsys
     capped = _talk_run(monkeypatch, tmp_path, capsys,
                        {'candidate_count': 400, 'deduped_count': 0, 'selected_count': 300})
     assert 'Frame coverage is sparse' in capped and 'use `--detail talk`' not in capped
+
+
+def test_whispercpp_report_names_the_model_and_detected_language(monkeypatch, capsys):
+    _mock_audio(monkeypatch)
+    monkeypatch.setenv('WATCH_WHISPER_BACKEND', 'whispercpp')
+    monkeypatch.setattr(watch, 'load_api_key', lambda *a: pytest.fail('no cloud credentials for local inference'))
+    segments = Segments([{'start': 1, 'end': 2, 'text': 'hola'}])
+    segments.language = 'es'
+    def run(*a, **kw):
+        assert kw['backend'] == 'whispercpp'
+        return segments, 'whispercpp'
+    monkeypatch.setattr(watch, 'transcribe_video', run)
+    monkeypatch.setattr(sys, 'argv', ['watch', 'video.mp4', '--detail', 'transcript'])
+    assert watch.main() == 0
+    assert 'whisper.cpp large-v3-turbo, language es' in capsys.readouterr().out
