@@ -411,9 +411,12 @@ def main() -> int:
             fallback = " fallback" if frame_meta.get("fallback") else ""
             deduped = frame_meta.get("deduped_count", 0)
             dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
+            fills, filled_gaps = frame_meta.get("fill_count", 0), frame_meta.get("filled_gaps", [])
+            fill_note = (f", {fills} gap-fill frame{'s' if fills != 1 else ''} in {len(filled_gaps)} "
+                         f"gap{'s' if len(filled_gaps) != 1 else ''} between cuts") if fills else ""
             print(
                 f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
-                f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
+                f"candidates ({engine}{fallback}{fill_note}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
             )
         elif not cue_frames:
             print("- **Frames:** skipped (transcript detail)")

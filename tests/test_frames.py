@@ -156,3 +156,138 @@ def test_scene_pass_scales_first_only_for_sources_twice_the_frame_width(monkeypa
     frames.extract_scene_candidates('video.mp4', tmp_path, resolution=512, source_width=source_width)
     vf = seen[0]
     assert vf.startswith('scale=') is scaled_first and vf.endswith('showinfo')
+
+
+# --- Gap fill: cuts are anchors, wide gaps between them get grid frames ---
+
+def _build_sparse_cut_clip(path: Path, cuts: int = 9, seg: float = 0.4, tail: float = 40.0, fps: int = 10) -> float:
+    """``cuts`` hard colour cuts in the first ``cuts * seg`` seconds, then a
+    ``testsrc`` tail that changes all the time but never cuts. Returns the
+    duration."""
+    import subprocess
+    from conftest import COLORS
+    inputs: list[str] = []
+    for i in range(cuts):
+        inputs += ["-f", "lavfi", "-t", str(seg), "-i", f"color=c={COLORS[i % len(COLORS)]}:s=320x240:r={fps}"]
+    inputs += ["-f", "lavfi", "-t", str(tail), "-i", f"testsrc=s=320x240:r={fps}"]
+    n = cuts + 1
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
+        "-filter_complex", "".join(f"[{i}:v]" for i in range(n)) + f"concat=n={n}:v=1:a=0[out]",
+        "-map", "[out]", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
+    ], check=True, capture_output=True)
+    return cuts * seg + tail
+
+
+@pytest.fixture(scope="module")
+def sparse_cut_clip(tmp_path_factory) -> tuple[Path, float]:
+    path = tmp_path_factory.mktemp("clips") / "sparse.mp4"
+    return path, _build_sparse_cut_clip(path)
+
+
+def _grid(times):
+    return [{"timestamp_seconds": t, "path": f"fill_{i:04d}.jpg", "reason": "gap-fill"} for i, t in enumerate(times)]
+
+
+def test_select_fills_only_wide_gaps_and_keeps_away_from_cuts():
+    grid = _grid([float(t) for t in range(0, 100, 10)])
+    # Cuts at 0, 15 and 60; step 10, so only gaps wider than 20 s are filled.
+    fills, gaps = frames._select_fills([0.0, 15.0, 60.0], grid, 100.0, 10.0, budget=50)
+    assert gaps == [(15.0, 60.0), (60.0, 100.0)]
+    # 20..50 inside the first gap (not 60: within half a step of the cut), 70..90 after the last cut.
+    assert [f["timestamp_seconds"] for f in fills] == [20.0, 30.0, 40.0, 50.0, 70.0, 80.0, 90.0]
+
+
+def test_select_fills_thins_evenly_to_the_budget_and_handles_no_budget():
+    grid = _grid([float(t) for t in range(0, 100, 10)])
+    fills, gaps = frames._select_fills([0.0], grid, 100.0, 10.0, budget=3)
+    assert [f["timestamp_seconds"] for f in fills] == [10.0, 50.0, 90.0]
+    assert gaps == [(0.0, 100.0)]
+    assert frames._select_fills([0.0], grid, 100.0, 10.0, budget=0) == ([], [])
+    # Cuts no further apart than two steps leave nothing to fill.
+    assert frames._select_fills([0.0, 20.0, 40.0, 60.0, 80.0], grid, 100.0, 10.0, budget=50) == ([], [])
+
+
+def test_scene_gap_fill_covers_a_slow_tail(sparse_cut_clip, tmp_path):
+    """The brief's case: 9 cuts in 3.6 s, then a 40 s tail with no cuts, budget
+    40. Before, this returned 9 frames and none after 3.6 s."""
+    clip, duration = sparse_cut_clip
+    out, meta = frames.extract_scene_or_uniform(str(clip), tmp_path / "f", fps=2.0, target_frames=40, max_frames=100)
+    assert meta["engine"] == "scene" and meta["fallback"] is False
+    assert meta["scene_count"] == 9 and meta["fill_count"] > 20
+    assert meta["candidate_count"] == meta["scene_count"] + meta["fill_count"]
+    assert meta["candidate_count"] == len(out) + meta["deduped_count"]
+    assert len(meta["filled_gaps"]) == 1 and meta["filled_gaps"][0][1] == pytest.approx(duration)
+    ts = [fr["timestamp_seconds"] for fr in out]
+    assert ts == sorted(ts) and len(out) <= 40
+    assert max(b - a for a, b in zip(ts, ts[1:])) < 3.0
+    assert {fr["reason"] for fr in out} >= {"scene-change", "gap-fill"}
+    # One contiguous frame_*.jpg sequence (so dedup ran), no stray fill files.
+    folder = tmp_path / "f"
+    assert sorted(fr["path"] for fr in out) == sorted(str(p) for p in folder.glob("frame_*.jpg"))
+    assert not list(folder.glob("fill_*.jpg")) and not list(folder.glob(".renumber_*"))
+    assert [fr["index"] for fr in out] == list(range(len(out)))
+
+
+def test_scene_gap_fill_stays_in_the_focus_window_and_under_the_cap(sparse_cut_clip, tmp_path):
+    clip, _ = sparse_cut_clip
+    out, meta = frames.extract_scene_or_uniform(
+        str(clip), tmp_path / "f", fps=2.0, target_frames=30, max_frames=12, start_seconds=0.5, end_seconds=20.0)
+    assert meta["engine"] == "scene" and meta["fill_count"] > 0
+    assert len(out) <= 12
+    assert all(0.5 <= fr["timestamp_seconds"] <= 20.0 for fr in out)
+    assert any(fr["timestamp_seconds"] > 10.0 for fr in out)
+
+
+def test_scene_no_fill_when_cuts_already_cover_the_clip(cut_clip, tmp_path):
+    out, meta = frames.extract_scene_or_uniform(str(cut_clip), tmp_path / "f", fps=2.0, target_frames=50, max_frames=100)
+    assert meta["fill_count"] == 0 and meta["filled_gaps"] == []
+    assert "gap-fill" not in {fr["reason"] for fr in out}
+    assert not list((tmp_path / "f").glob("fill_*.jpg"))
+
+
+def test_static_fallback_leaves_no_fill_files(static_clip, tmp_path):
+    out, meta = frames.extract_scene_or_uniform(str(static_clip), tmp_path / "f", fps=2.0, target_frames=6)
+    assert meta["engine"] == "uniform"
+    assert not list((tmp_path / "f").glob("fill_*.jpg"))
+
+
+@pytest.mark.parametrize('source_width,scaled_first', [(None, False), (1920, True)])
+def test_fill_grid_shares_the_scene_decode_and_scale(monkeypatch, tmp_path, source_width, scaled_first):
+    import subprocess
+    seen = []
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(frames, 'run_text', run)
+    monkeypatch.setattr(frames, 'sync_args', lambda: ('-fps_mode', 'vfr'))
+    frames.extract_scene_candidates('video.mp4', tmp_path, resolution=512, source_width=source_width, fill_rate=0.5)
+    assert len(seen) == 1  # one ffmpeg run writes both the cuts and the grid
+    graph = seen[0][seen[0].index('-filter_complex') + 1]
+    assert graph.startswith('scale=') is scaled_first
+    assert graph.count('scale=') == (1 if scaled_first else 2)
+    assert 'showinfo@scene' in graph and 'showinfo@fill' in graph
+
+
+def test_renumber_sequence_merges_fill_and_frame_files_in_time_order(tmp_path):
+    d = tmp_path / "f"
+    d.mkdir()
+    for name in ("frame_0001.jpg", "frame_0002.jpg", "fill_0001.jpg"):
+        (d / name).write_bytes(name.encode())
+    merged = frames._renumber_sequence([
+        {"path": str(d / "frame_0001.jpg"), "timestamp_seconds": 0.0, "index": 0},
+        {"path": str(d / "frame_0002.jpg"), "timestamp_seconds": 4.0, "index": 1},
+        {"path": str(d / "fill_0001.jpg"), "timestamp_seconds": 2.0, "index": 0},
+    ], d)
+    assert [Path(m["path"]).name for m in merged] == ["frame_0001.jpg", "frame_0002.jpg", "frame_0003.jpg"]
+    assert [m["index"] for m in merged] == [0, 1, 2]
+    assert (d / "frame_0002.jpg").read_bytes() == b"fill_0001.jpg"
+    assert sorted(p.name for p in d.iterdir()) == ["frame_0001.jpg", "frame_0002.jpg", "frame_0003.jpg"]
+
+
+def test_emitted_frames_reads_one_named_showinfo():
+    stderr = ("[showinfo@scene @ 0x1] n:   0 pts:      0 pts_time:0\n"
+              "[showinfo@fill @ 0x2] n:   0 pts:      0 pts_time:0\n"
+              "[showinfo@fill @ 0x2] n:   1 pts:     10 pts_time:2.5\n")
+    out = frames._emitted_frames([Path('a.jpg'), Path('b.jpg')], stderr, 1.0, 'gap-fill', 'fill')
+    assert [f["timestamp_seconds"] for f in out] == [1.0, 3.5]
