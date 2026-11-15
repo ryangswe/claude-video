@@ -315,11 +315,14 @@ def test_emitted_frames_reads_one_named_showinfo():
     assert [f["timestamp_seconds"] for f in out] == [1.0, 3.5]
 
 
-def test_uncapped_fill_budget_ignores_a_huge_fps_target(sparse_cut_clip, tmp_path):
+def test_uncapped_fill_budget_ignores_a_huge_fps_target(sparse_cut_clip, tmp_path, monkeypatch):
     """token-burner with --fps 2: target_frames is fps * duration and there is no
-    cap, but fills stay within UNCAPPED_FILL_BUDGET."""
+    cap, but fills stay within UNCAPPED_FILL_BUDGET. The constant is lowered to
+    20 so the short test clip is not already at the 1 s spacing floor (with the
+    real 100 it would be, and the test could not tell the fix from the bug)."""
+    monkeypatch.setattr(frames, "UNCAPPED_FILL_BUDGET", 20)
     clip, duration = sparse_cut_clip
     out, meta = frames.extract_scene_or_uniform(
         str(clip), tmp_path / "f", fps=2.0, target_frames=100_000, max_frames=None)
-    assert 0 < meta["fill_candidate_count"] <= frames.UNCAPPED_FILL_BUDGET - meta["scene_count"]
-    assert len(out) <= frames.UNCAPPED_FILL_BUDGET
+    assert meta["scene_count"] == 9
+    assert 0 < meta["fill_candidate_count"] <= 20 - 9
