@@ -2,6 +2,14 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Changed
+- Captions now default to English. In `auto` mode the skill takes manual English captions first, then English speech recognition (`en-orig`), then an English translation, and only then the original language. When a YouTube `-orig` track shows the video is in another language, the report labels the English track a translation. To get the original captions of a video in another language, pass `--sub-lang` with its code, such as `--sub-lang ko`.
+
+### Fixed
+- English YouTube videos with dubbed audio got Arabic captions. YouTube lists one `-orig` recognition track per dub, and with more than one the skill took the first in alphabetical order, `ar-orig`. Two real English talks hit this. With several, the original is now the one that matches the video's reported language. A dubbed video that reports no language and has no English track can still get the first dub, labeled unknown.
+
 ## [0.4.1] — 2026-11-11 — fork release
 
 ### Fixed

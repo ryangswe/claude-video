@@ -297,7 +297,7 @@ After reading a transcript, the agent can pin “look here” moments with `--ti
 
 ## Captions, authentication, and partial results
 
-Auto caption selection uses original-language evidence when available, preferring same-language manual captions before original ASR. It requests at most one track. Unknown provenance is labeled unknown. `--sub-lang CODE` / `WATCH_SUB_LANG` chooses an explicit language, which may be a translation.
+Auto caption selection prefers English. It takes manual English captions first, then YouTube's English speech recognition, then an English translation. Only when no English track exists does it take the original language, manual captions before speech recognition. It requests at most one track. The report labels each track original, translation or unknown. Videos with dubbed audio list one recognition track per dub, so the original is the one that matches the language the video reports. If the video reports no language and has no English track, the pick is labeled unknown. Before this, such videos got the first dub in alphabetical order, usually Arabic. `--sub-lang CODE` / `WATCH_SUB_LANG` chooses an explicit language, which may be a translation.
 
 Authentication is opt-in:
 

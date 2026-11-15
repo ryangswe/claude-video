@@ -93,41 +93,74 @@ def _summary(raw: dict, url: str) -> dict:
             'duration': raw.get('duration'), 'url': raw.get('webpage_url') or url}
 
 
+def _caption_lang(key: str) -> str:
+    return key.removesuffix('-orig').split('-')[0].lower()
+
+
+def _original_language(info: dict, originals: list[str]) -> str | None:
+    """The spoken language, from YouTube's ``-orig`` ASR tracks.
+
+    Videos with auto-dubbed audio list one ``-orig`` track per dub, so with several the
+    one matching the reported language is the original. Without a match nothing is known.
+    """
+    if len(originals) == 1:
+        return originals[0][:-5]
+    reported = str(info.get('language') or '')
+    for key in originals:
+        if key[:-5] == reported:
+            return key[:-5]
+    candidates = [k for k in originals if reported and _caption_lang(k) == reported.split('-')[0].lower()]
+    return candidates[0][:-5] if len(candidates) == 1 else None
+
+
+def _provenance(key: str, original: str | None, translation: str = 'translation') -> str:
+    if not original:
+        return 'unknown'
+    return 'original' if _caption_lang(key) == _caption_lang(original) else translation
+
+
 def select_caption(info: dict, language: str = 'auto') -> dict | None:
-    """Select at most one track and keep provenance separate from yt-dlp's clean JSON."""
+    """Select at most one track and keep provenance separate from yt-dlp's clean JSON.
+
+    ``auto`` prefers English: manual English, then English ASR (``en-orig``), then an
+    English translation, and only then the original language or any other track.
+    """
     manual = {k: v for k, v in (info.get('subtitles') or {}).items() if v and k != 'live_chat'}
     automatic = {k: v for k, v in (info.get('automatic_captions') or {}).items() if v and k != 'live_chat'}
     youtube = str(info.get('extractor_key') or info.get('extractor') or '').lower().startswith('youtube')
     originals = sorted(k for k in automatic if youtube and k.endswith('-orig'))
-    original = originals[0][:-5] if len(originals) == 1 else None
-    target = language if language != 'auto' else original or info.get('language')
+    original = _original_language(info, originals)
+    reported = str(info.get('language') or original or '')
+
+    def pick(kind, keys, provenance=None):
+        if not keys:
+            return None
+        key = min(keys, key=lambda k: (k.removesuffix('-orig') != reported, k))
+        return {'key': key, 'language': key.removesuffix('-orig'), 'kind': kind,
+                'provenance': provenance or _provenance(key, original)}
+
+    if language == 'auto':
+        english = lambda tracks: [k for k in tracks if _caption_lang(k) == 'en']
+        spoken = _caption_lang(reported) if reported else None  # -orig evidence, else the reported language
+        native = lambda tracks: [k for k in tracks if spoken and _caption_lang(k) == spoken]
+        auto_en = english(automatic)
+        return (pick('manual', english(manual))
+                or pick('automatic', [k for k in auto_en if k.endswith('-orig')])
+                or pick('automatic', auto_en)
+                or pick('manual', native(manual))
+                or pick('automatic', [k for k in native(automatic) if k.endswith('-orig')] or native(automatic))
+                or pick('manual', list(manual))
+                or pick('automatic', originals or list(automatic)))
+
     def matches(key):
         base = key.removesuffix('-orig')
-        if language != 'auto':
-            return key == target or base == target or ('-' not in language and base.split('-')[0] == target)
-        return target and (base == target or base.split('-')[0] == str(target).split('-')[0])
-    def english_first(key):  # Unknown source language: prefer English over alphabetical order.
-        return key.removesuffix('-orig').split('-')[0] != 'en', key
+        return key == language or base == language or ('-' not in language and _caption_lang(key) == language.lower())
     for kind, tracks in (('manual', manual), ('automatic', automatic)):
-        keys = sorted(tracks, key=english_first)
-        if target:
-            keys = sorted((k for k in keys if matches(k)), key=lambda k: (k != target, k != f'{target}-orig', k))
+        keys = sorted((k for k in tracks if matches(k)), key=lambda k: (k != language, k != f'{language}-orig', k))
         if keys:
             key = keys[0]
-            # Auto mode must prefer original ASR to translated/dubbed metadata.
-            if kind == 'automatic' and language == 'auto' and originals:
-                key = originals[0]
-            base = key.removesuffix('-orig')
-            provenance = 'original' if original and base.split('-')[0] == original.split('-')[0] else 'unknown'
-            if language != 'auto' and original and base.split('-')[0] != original.split('-')[0]:
-                provenance = 'requested translation'
-            return {'key': key, 'language': base, 'kind': kind, 'provenance': provenance}
-    # Unknown language evidence: select one available track, visibly labeled unknown.
-    if language == 'auto':
-        for kind, tracks in (('manual', manual), ('automatic', automatic)):
-            if tracks:
-                key = min(tracks, key=english_first)
-                return {'key': key, 'language': key.removesuffix('-orig'), 'kind': kind, 'provenance': 'unknown'}
+            return {'key': key, 'language': key.removesuffix('-orig'), 'kind': kind,
+                    'provenance': _provenance(key, original, 'requested translation')}
     return None
 
 

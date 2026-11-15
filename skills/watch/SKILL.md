@@ -120,7 +120,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--no-dedup` | Preserve near-identical selected frames |
 | `--whisper groq|openai|whisperx|whispercpp` | Select this run's fallback; captions still come first |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
-| `--sub-lang CODE` | Select one exact caption language; default `auto` prefers original-language evidence |
+| `--sub-lang CODE` | Select one exact caption language; default `auto` prefers English captions, then the original language |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |
 | `--cookies-from-browser BROWSER` | Explicit browser selector, including a profile if supplied; conflicts with `--cookies` |
 | `--out-dir DIR` | Create this run's disposable child directory inside DIR |

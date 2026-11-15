@@ -13,14 +13,42 @@ def _tracks(*keys):
     return {k: [{'url': 'https://example.com/sub.vtt', 'ext': 'vtt'}] for k in keys}
 
 
-@pytest.mark.parametrize('language', ['en', 'ko', 'pt-BR'])
-def test_original_track_overrides_dubbed_metadata(language):
+def test_original_english_track_beats_dubbed_metadata():
+    info = {'extractor_key': 'Youtube', 'language': 'ko', 'subtitles': _tracks('en'),
+            'automatic_captions': _tracks('en-orig', 'en', 'ko')}
+    track = download.select_caption(info)
+    assert track['key'] == 'en' and track['kind'] == 'manual' and track['provenance'] == 'original'
+    info['subtitles'] = _tracks('fr')
+    assert download.select_caption(info)['key'] == 'en-orig'
+
+
+@pytest.mark.parametrize('language', ['ko', 'pt-BR'])
+def test_english_translation_beats_the_original_language(language):
     info = {'extractor_key': 'Youtube', 'language': 'en', 'subtitles': _tracks(language),
             'automatic_captions': _tracks(f'{language}-orig', 'en', 'ko')}
     track = download.select_caption(info)
-    assert track['key'] == language and track['kind'] == 'manual' and track['provenance'] == 'original'
-    info['subtitles'] = _tracks('fr')
+    assert (track['key'], track['kind'], track['provenance']) == ('en', 'automatic', 'translation')
+    info['automatic_captions'] = _tracks(f'{language}-orig', 'ko')
+    track = download.select_caption(info)
+    assert (track['key'], track['kind'], track['provenance']) == (language, 'manual', 'original')
+    info['subtitles'] = {}
     assert download.select_caption(info)['key'] == f'{language}-orig'
+
+
+def test_auto_dubbed_video_picks_english_not_the_first_dub():
+    # Real YouTube metadata (2026-11): English talk with ~20 dubbed audio tracks, each with
+    # its own -orig ASR track. Alphabetical order used to pick ar-orig.
+    dubs = ['ar', 'bn', 'de', 'es', 'fr', 'hi', 'ja', 'ko', 'pt', 'ru']
+    info = {'extractor_key': 'Youtube', 'language': 'en-US',
+            'automatic_captions': _tracks(*dubs, 'en', 'en-orig', *(f'{d}-orig' for d in dubs))}
+    track = download.select_caption(info)
+    assert (track['key'], track['provenance']) == ('en-orig', 'original')
+    # A Spanish talk with dubs, one of them English: English still wins, labeled a translation.
+    info['language'] = 'es'
+    assert download.select_caption(info)['provenance'] == 'translation'
+    # No English anywhere: the reported language's original track, not the first dub.
+    info['automatic_captions'] = _tracks('es', 'es-orig', *(f'{d}-orig' for d in dubs if d != 'es'))
+    assert download.select_caption(info)['key'] == 'es-orig'
 
 
 def test_unknown_language_prefers_english():
@@ -29,6 +57,14 @@ def test_unknown_language_prefers_english():
     assert (picked['key'], picked['provenance']) == ('en', 'unknown')
     assert download.select_caption({'automatic_captions': _tracks('af', 'en-GB', 'zu')})['key'] == 'en-GB'
     assert download.select_caption({'subtitles': _tracks('de', 'fr')})['key'] == 'de'
+
+
+def test_reported_language_without_orig_tracks_matches_regions():
+    assert download.select_caption({'extractor_key': 'Generic', 'language': 'pt', 'subtitles': _tracks('pt-BR', 'es')})['key'] == 'pt-BR'
+    assert download.select_caption({'extractor_key': 'Generic', 'language': 'pt-BR', 'subtitles': _tracks('pt', 'es')})['key'] == 'pt'
+    picked = download.select_caption({'extractor_key': 'Generic', 'language': 'ko', 'subtitles': _tracks('fr'),
+                                      'automatic_captions': _tracks('ko')})
+    assert (picked['key'], picked['kind'], picked['provenance']) == ('ko', 'automatic', 'unknown')
 
 
 def test_requested_translation_and_unknown_source():
@@ -130,7 +166,7 @@ def test_actual_ytdlp_exact_track_with_inherited_all(monkeypatch, tmp_path, stat
     raw = {'id': 'offline', 'title': 'Offline', 'extractor': 'generic', 'extractor_key': 'Generic',
            'webpage_url': URL, 'url': static_clip.as_uri(), 'ext': 'mp4', 'duration': 3,
            'language': 'ko', 'subtitles': {'ko': [{'url': subs.as_uri(), 'ext': 'vtt'}],
-                                        'en': [{'url': (tmp_path / 'must-not-read.vtt').as_uri(), 'ext': 'vtt'}]}}
+                                        'fr': [{'url': (tmp_path / 'must-not-read.vtt').as_uri(), 'ext': 'vtt'}]}}
     real_run = download._run
     def stages(cmd):
         if '--load-info-json' not in cmd and '--skip-download' in cmd:
