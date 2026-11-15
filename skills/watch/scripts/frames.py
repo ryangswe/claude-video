@@ -37,9 +37,12 @@ MAX_READ_DIMENSION = 1998
 # per-channel difference (0-255) is at or below DEDUP_THRESHOLD. This catches
 # held slides, but subtle code/text changes can be missed at this thumbnail size. Unlike a within-frame
 # perceptual hash, this distinguishes flat frames (solid slides, fades) by color.
-# Gap fill: a gap between scene cuts gets uniform frames only when it is wider
-# than this many budget spacings (duration / budget).
-FILL_MIN_GAP_STEPS = 2.0
+# Gap fill: frames for gaps between scene cuts come from a uniform grid this
+# many budget spacings (range length / frame budget) apart. At 2, fills alone
+# reach at most about half the budget, so a long talk whose cuts are sparse is
+# not padded to its cap even when near-duplicate removal cannot drop repeats,
+# and any slide shown longer than one grid spacing still gets a frame.
+FILL_SPACING_STEPS = 2.0
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([^\s]+)")
@@ -556,30 +559,34 @@ def _delete_frames(frames: list[dict]) -> None:
             pass
 
 
+def _fill_spacing(length: float, budget: int) -> float:
+    """Seconds between gap-fill grid frames for a range of ``length`` seconds."""
+    return FILL_SPACING_STEPS * max(1.0 / MAX_FPS, length / max(1, budget))
+
+
 def _select_fills(
-    anchors: list[float], grid: list[dict], end: float, step: float, budget: int,
+    anchors: list[float], grid: list[dict], end: float, spacing: float, budget: int,
 ) -> tuple[list[dict], list[tuple[float, float]]]:
     """Pick the grid frames that sit inside wide gaps between scene cuts.
 
     ``anchors`` are the cut times in order (the first frame counts as one). A
-    gap runs from one anchor to the next, and the last one runs to ``end``. A
-    gap is filled only when it is wider than ``FILL_MIN_GAP_STEPS`` grid steps,
-    so cuts that are merely a little sparser than the budget stay as they are,
-    and a talk whose slides are all caught is not padded up to its cap. Inside
-    a filled gap, grid frames closer than half a step to a cut are skipped,
-    since they would repeat that cut. When more frames qualify than
-    ``budget``, they are thinned evenly. Returns ``(fills, filled_gaps)``.
+    gap runs from one anchor to the next, and the last one runs to ``end``.
+    ``grid`` frames are ``spacing`` seconds apart. A gap is filled only when it
+    is wider than ``spacing``, and grid frames closer than half a spacing to a
+    cut are skipped, since they would repeat that cut. When more frames
+    qualify than ``budget``, they are thinned evenly. Returns
+    ``(fills, filled_gaps)``.
     """
     if budget <= 0 or not anchors or not grid:
         return [], []
     bounds = list(zip(anchors, [*anchors[1:], end]))
-    wide = [(a, b) for a, b in bounds if b - a > FILL_MIN_GAP_STEPS * step]
+    wide = [(a, b) for a, b in bounds if b - a > spacing]
     picked: list[dict] = []
     filled: list[tuple[float, float]] = []
     for a, b in wide:
         last = b == end
-        inside = [g for g in grid if a + step / 2 <= g["timestamp_seconds"]
-                  and (g["timestamp_seconds"] <= b if last else g["timestamp_seconds"] <= b - step / 2)]
+        inside = [g for g in grid if a + spacing / 2 <= g["timestamp_seconds"]
+                  and (g["timestamp_seconds"] <= b if last else g["timestamp_seconds"] <= b - spacing / 2)]
         picked.extend(inside)
     if len(picked) > budget:
         picked = [picked[i] for i in _even_indices(len(picked), budget)]
@@ -634,15 +641,17 @@ def extract_scene_or_uniform(
 
     Cuts are anchors, not the whole answer. Slow changes (scrolls, zooms, a
     slide change on a white template) score far below ``SCENE_THRESHOLD``, so
-    the same decode also writes a uniform grid at the budget's spacing, and
-    gaps between cuts wider than ``FILL_MIN_GAP_STEPS`` grid steps get the grid
-    frames inside them (``reason`` ``gap-fill``), up to the budget
-    (``target_frames``, capped by ``max_frames``) less the cuts.
+    the same decode also writes a uniform grid ``FILL_SPACING_STEPS`` budget
+    spacings apart, and gaps between cuts wider than one grid spacing get the
+    grid frames inside them (``reason`` ``gap-fill``), up to the budget
+    (``target_frames``, capped by ``max_frames``) less the cuts. The last gap
+    runs from the final cut to the end of the range.
     """
     budget = target_frames if max_frames is None else min(target_frames, max_frames)
     start = start_seconds or 0.0
-    end = end_seconds if end_seconds is not None else get_metadata(video_path)["duration_seconds"]
-    step = max(1.0 / MAX_FPS, (end - start) / max(1, budget))
+    duration = get_metadata(video_path)["duration_seconds"]
+    end = duration if end_seconds is None else min(end_seconds, duration)
+    spacing = _fill_spacing(end - start, budget)
     scene_frames, grid = extract_scene_candidates(
         video_path,
         out_dir,
@@ -651,24 +660,28 @@ def extract_scene_or_uniform(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
         source_width=source_width,
-        fill_rate=1.0 / step,
+        fill_rate=1.0 / spacing,
     )
     scene_count = len(scene_frames)
     if scene_count >= SCENE_MIN_FRAMES:
         fills, filled_gaps = _select_fills(
-            [f["timestamp_seconds"] for f in scene_frames], grid, end, step, budget - scene_count)
+            [f["timestamp_seconds"] for f in scene_frames], grid, end, spacing, budget - scene_count)
         keep = {f["path"] for f in fills}
         _delete_frames([g for g in grid if g["path"] not in keep])
         candidates = _renumber_sequence([*scene_frames, *fills], out_dir) if fills else scene_frames
         deduped, n_dropped = dedupe_perceptual(candidates) if dedup else (candidates, 0)
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
+        kept = [f["timestamp_seconds"] for f in selected if f["reason"] == "gap-fill"]
         return selected, {
             "engine": "scene",
             "candidate_count": len(candidates),
             "scene_count": scene_count,
-            "fill_count": len(fills),
-            "filled_gaps": [[round(a, 3), round(b, 3)] for a, b in filled_gaps],
+            "fill_candidate_count": len(fills),
+            # Counted after dedup and sampling, so they describe the frames shown.
+            "fill_count": len(kept),
+            "filled_gaps": [[round(a, 3), round(b, 3)] for a, b in filled_gaps
+                            if any(a < t <= b for t in kept)],
             "deduped_count": n_dropped,
             "selected_count": len(selected),
             "fallback": False,

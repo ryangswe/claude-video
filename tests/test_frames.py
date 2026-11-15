@@ -191,10 +191,9 @@ def _grid(times):
 
 def test_select_fills_only_wide_gaps_and_keeps_away_from_cuts():
     grid = _grid([float(t) for t in range(0, 100, 10)])
-    # Cuts at 0, 15 and 60; step 10, so only gaps wider than 20 s are filled.
-    fills, gaps = frames._select_fills([0.0, 15.0, 60.0], grid, 100.0, 10.0, budget=50)
-    assert gaps == [(15.0, 60.0), (60.0, 100.0)]
-    # 20..50 inside the first gap (not 60: within half a step of the cut), 70..90 after the last cut.
+    # Grid spacing 10 s: the 8 s gap is left alone, and grid frames within 5 s of a cut are skipped.
+    fills, gaps = frames._select_fills([0.0, 8.0, 60.0], grid, 100.0, 10.0, budget=50)
+    assert gaps == [(8.0, 60.0), (60.0, 100.0)]
     assert [f["timestamp_seconds"] for f in fills] == [20.0, 30.0, 40.0, 50.0, 70.0, 80.0, 90.0]
 
 
@@ -204,8 +203,30 @@ def test_select_fills_thins_evenly_to_the_budget_and_handles_no_budget():
     assert [f["timestamp_seconds"] for f in fills] == [10.0, 50.0, 90.0]
     assert gaps == [(0.0, 100.0)]
     assert frames._select_fills([0.0], grid, 100.0, 10.0, budget=0) == ([], [])
-    # Cuts no further apart than two steps leave nothing to fill.
-    assert frames._select_fills([0.0, 20.0, 40.0, 60.0, 80.0], grid, 100.0, 10.0, budget=50) == ([], [])
+    # Cuts no further apart than one grid spacing leave nothing to fill.
+    assert frames._select_fills([float(t) for t in range(0, 100, 10)], grid, 100.0, 10.0, budget=50) == ([], [])
+
+
+@pytest.mark.parametrize("cut_every", [30, 50, 60, 120, 300, 7200])
+def test_two_hour_talk_is_not_padded_to_the_talk_cap(cut_every):
+    """``--detail talk`` on a 2-hour talk: budget and cap 300. Whatever the cut
+    spacing, fills stay at about half the budget, so a speaker inset that keeps
+    dedup from dropping repeats cannot fill the cap with one slide."""
+    length, budget = 7200.0, 300
+    spacing = frames._fill_spacing(length, budget)
+    grid = _grid([i * spacing for i in range(int(length / spacing) + 1)])
+    anchors = [float(t) for t in range(0, int(length), cut_every)]
+    fills, _ = frames._select_fills(anchors, grid, length, spacing, budget - len(anchors))
+    # Fills come from a grid two budget spacings apart, so they reach at most
+    # about half the budget, and cuts plus fills stay under the cap unless the
+    # cuts alone already take more than half of it.
+    assert len(fills) <= budget / 2 + 1
+    if len(anchors) <= budget / 2:
+        assert len(anchors) + len(fills) < budget
+    # A slide shown longer than one spacing (48 s here) always gets a frame.
+    kept = sorted([*anchors, *(f["timestamp_seconds"] for f in fills)])
+    assert spacing == pytest.approx(48.0)
+    assert max(b - a for a, b in zip(kept, [*kept[1:], length])) <= spacing * 1.5 + 1e-6
 
 
 def test_scene_gap_fill_covers_a_slow_tail(sparse_cut_clip, tmp_path):
@@ -214,8 +235,8 @@ def test_scene_gap_fill_covers_a_slow_tail(sparse_cut_clip, tmp_path):
     clip, duration = sparse_cut_clip
     out, meta = frames.extract_scene_or_uniform(str(clip), tmp_path / "f", fps=2.0, target_frames=40, max_frames=100)
     assert meta["engine"] == "scene" and meta["fallback"] is False
-    assert meta["scene_count"] == 9 and meta["fill_count"] > 20
-    assert meta["candidate_count"] == meta["scene_count"] + meta["fill_count"]
+    assert meta["scene_count"] == 9 and meta["fill_count"] > 10
+    assert meta["candidate_count"] == meta["scene_count"] + meta["fill_candidate_count"]
     assert meta["candidate_count"] == len(out) + meta["deduped_count"]
     assert len(meta["filled_gaps"]) == 1 and meta["filled_gaps"][0][1] == pytest.approx(duration)
     ts = [fr["timestamp_seconds"] for fr in out]
