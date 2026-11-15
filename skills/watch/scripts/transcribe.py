@@ -135,8 +135,15 @@ def filter_range(segments: list[dict], start_seconds: float | None, end_seconds:
     return [seg for seg in segments if seg['end'] >= lo and seg['start'] <= hi]
 
 
+def format_stamp(seconds: float) -> str:
+    """``MM:SS``, or ``H:MM:SS`` from the first hour on, like the frame timestamps."""
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f'{hours}:{minutes:02d}:{secs:02d}' if hours else f'{minutes:02d}:{secs:02d}'
+
+
 def format_transcript(segments: list[dict]) -> str:
-    return '\n'.join(f"[{int(s['start']) // 60:02d}:{int(s['start']) % 60:02d}] {s['text']}" for s in segments)
+    return '\n'.join(f"[{format_stamp(s['start'])}] {s['text']}" for s in segments)
 
 
 if __name__ == '__main__':

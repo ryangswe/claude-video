@@ -120,6 +120,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--no-dedup` | Preserve near-identical selected frames |
 | `--whisper groq|openai|whisperx|whispercpp` | Select this run's fallback; captions still come first |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
+| `--force-whisper` | Skip native captions and transcribe the audio with the speech backend. Use it when the captions are an English translation of another language or are poor. A cloud backend uploads the audio. Errors with `--no-whisper`, with backend `none`, or with a cloud backend that has no key |
 | `--sub-lang CODE` | Select one exact caption language; default `auto` prefers English captions, then the original language |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |
 | `--cookies-from-browser BROWSER` | Explicit browser selector, including a profile if supplied; conflicts with `--cookies` |
@@ -167,7 +168,7 @@ If a small-model transcript is nonsense, suggest the actual spoken-language hint
 
 Cloud fallbacks extract mono 16 kHz MP3 and upload within a conservative 24,000,000-byte file budget. Large files are chunked with source-time offsets restored; missing chunks appear in the final report. Provider errors do not justify automatic provider switching.
 
-For download failures, use the bounded original error and its diagnostic hint. A 403 has no generic fix, but first update yt-dlp with its owning package manager (e.g. `brew upgrade yt-dlp`, `pipx upgrade yt-dlp`) and retry once. Do not hardcode alternate clients, cycle cookies, or disable TLS verification. Preserve available captions when media/probing fails. For hosted environments, local uploads solve downloading only; cloud ASR and cold local-model setup still need permitted network access.
+For download failures, use the bounded original error and its diagnostic hint. A failed yt-dlp run names the installed version and its age, and says when it is old enough to be the likely cause. A 403 has no generic fix, but first update yt-dlp with its owning package manager (e.g. `brew upgrade yt-dlp`, `pipx upgrade yt-dlp`) and retry once. Do not hardcode alternate clients, cycle cookies, or disable TLS verification. Preserve available captions when media/probing fails. For hosted environments, local uploads solve downloading only; cloud ASR and cold local-model setup still need permitted network access.
 
 For follow-ups, reuse evidence already viewed before rerunning. Remove only the disposable **Work dir** created by this invocation when no longer needed. Never delete the parent supplied with `--out-dir`, a user source file, the local venv, or model caches as routine cleanup.
 

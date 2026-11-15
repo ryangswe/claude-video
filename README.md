@@ -219,7 +219,7 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx|whispercpp` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx|whispercpp` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict. `--force-whisper` skips native captions and always transcribes the audio with the chosen backend, which helps when the captions are an English translation of another language or are poor. With a cloud backend that uploads the audio. It stops before any download when there is no backend to use: with `--no-whisper`, with `WATCH_WHISPER_BACKEND=none`, or with a cloud backend that has no API key.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_config,
                     load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
-from runtime import configure_stdio, diagnostic, run_text
+from runtime import YT_DLP_UPDATE, configure_stdio, diagnostic, run_text, ytdlp_age_note, ytdlp_release_age
 
 REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
 WHISPERX_VERSION = '3.8.6'
@@ -194,13 +194,16 @@ def _status(detailed=False):
         for name in REQUIRED_BINARIES:
             path = _which(name)
             tools[name] = {'path': path, **(_probe([path, '--version' if name == 'yt-dlp' else '-version']) if path else {'ok': False})}
+            if name == 'yt-dlp' and tools[name].get('version_line'):
+                tools[name]['released_days_ago'] = ytdlp_release_age(tools[name]['version_line'])
+                tools[name]['age_note'] = ytdlp_age_note(tools[name]['version_line']) or None
         ytdlp = _which('yt-dlp')
         result['tools'] = tools
         result['youtube'] = {
             'deno': _which('deno'), 'node': _which('node'),
             'ejs': 'unknown (inspect the owning yt-dlp installation; no network probe)',
             'impersonation': _probe([ytdlp, '--ignore-config', '--list-impersonate-targets']) if ytdlp else None,
-            'update_hint': 'Update the owning package: brew upgrade yt-dlp; pipx upgrade yt-dlp; or winget upgrade --id yt-dlp.yt-dlp --exact. Verify the executable path above.',
+            'update_hint': f'Update the owning package: {YT_DLP_UPDATE}. Verify the executable path above.',
         }
     return result
 

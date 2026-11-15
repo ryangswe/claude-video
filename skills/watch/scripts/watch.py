@@ -109,7 +109,8 @@ def write_transcript_parts(segments: list[dict], folder: Path, note: str,
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
     """Google watches the video. No captions, frames, or Whisper; no fallback on failure."""
     ignored = [flag for flag, name in LOCAL_ONLY_FLAGS if getattr(args, name) is not None]
-    ignored += [flag for flag, on in (("--no-whisper", args.no_whisper), ("--no-dedup", args.no_dedup)) if on]
+    ignored += [flag for flag, on in (("--no-whisper", args.no_whisper), ("--no-dedup", args.no_dedup),
+                                      ("--force-whisper", args.force_whisper)) if on]
     clip = (start_sec, end_sec) if start_sec is not None or end_sec is not None else None
     uploaded, warning, result, error, sent, work = None, None, None, None, "URL sent to Google", None
     try:
@@ -207,6 +208,12 @@ def main() -> int:
         help="Select the fallback backend for this run; native captions still come first.",
     )
     ap.add_argument(
+        "--force-whisper",
+        action="store_true",
+        help="Skip native captions and transcribe the audio with the speech backend. Use when "
+             "captions are a translation or poor.",
+    )
+    ap.add_argument(
         "--no-dedup",
         action="store_true",
         help="Disable near-duplicate frame removal. Keeps visually identical "
@@ -224,6 +231,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.no_whisper and args.whisper:
         ap.error("--no-whisper conflicts with --whisper")
+    if args.force_whisper and args.no_whisper:
+        ap.error("--force-whisper conflicts with --no-whisper")
 
     config = get_config(backend_override="none" if args.no_whisper else args.whisper)
     detail = args.detail or config["detail"]
@@ -233,6 +242,12 @@ def main() -> int:
     validate_controls(args.resolution, max_frames, start_sec, end_sec, args.fps)
     cue_timestamps = parse_timestamps(args.timestamps)
     backend_choice = "none" if args.no_whisper else args.whisper or config["whisper_backend"]
+    if args.force_whisper and backend_choice == "none":
+        ap.error("--force-whisper needs a speech backend, but WATCH_WHISPER_BACKEND is none")
+    if (args.force_whisper and backend_choice not in ("whisperx", "whispercpp")
+            and not load_api_key(None if backend_choice == "auto" else backend_choice)[0]):
+        ap.error(f"--force-whisper needs a speech backend, but {backend_choice} has no API key; "
+                 "use --whisper whispercpp or add a key")
     cookies_file = args.cookies if args.cookies is not None else (None if args.cookies_from_browser else config["cookies_file"])
     cookies_browser = args.cookies_from_browser if args.cookies_from_browser is not None else (None if args.cookies else config["cookies_from_browser"])
     auth_args(cookies_file, cookies_browser)  # Validate even before starting network work.
@@ -259,7 +274,8 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download", sub_lang=args.sub_lang or config["sub_lang"], **auth)
+        dl = fetch_captions(args.source, work / "download", sub_lang=args.sub_lang or config["sub_lang"],
+                            captions=not args.force_whisper, **auth)
         errors.extend(dl.get("errors", []))
         if dl.get("subtitle_path"):
             try:

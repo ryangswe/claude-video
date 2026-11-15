@@ -1,5 +1,6 @@
 """VTT syntax, independent repeated speech, and source segment validation."""
 import pytest
+import transcribe
 from transcribe import parse_vtt, normalize_segments
 
 
@@ -78,3 +79,9 @@ def test_two_line_subtitles_keep_repeated_lines(tmp_path):
     dialogue = parse(tmp_path, 'WEBVTT\n\n00:00.000 --> 00:02.000\n- Is it him?\n- Yes.\n\n'
                                '00:02.000 --> 00:04.000\n- Yes.\n- Are you sure?\n')
     assert [s['text'] for s in dialogue] == ['- Is it him? - Yes.', '- Yes. - Are you sure?']
+
+
+def test_transcript_stamps_show_hours_like_frames():
+    segments = [{'start': 59.9, 'end': 61, 'text': 'a'}, {'start': 3599.5, 'end': 3600, 'text': 'b'},
+                {'start': 3661.2, 'end': 3665, 'text': 'c'}, {'start': 36000, 'end': 36001, 'text': 'd'}]
+    assert transcribe.format_transcript(segments).splitlines() == ['[00:59] a', '[59:59] b', '[1:01:01] c', '[10:00:00] d']
