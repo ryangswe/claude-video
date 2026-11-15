@@ -40,9 +40,14 @@ MAX_READ_DIMENSION = 1998
 # Gap fill: frames for gaps between scene cuts come from a uniform grid this
 # many budget spacings (range length / frame budget) apart. At 2, fills alone
 # reach at most about half the budget, so a long talk whose cuts are sparse is
-# not padded to its cap even when near-duplicate removal cannot drop repeats,
-# and any slide shown longer than one grid spacing still gets a frame.
+# not padded to its cap even when near-duplicate removal cannot drop repeats.
+# A stretch without a cut is left at most about 1.5 grid spacings without a
+# frame, because grid frames within half a spacing of a cut are skipped.
 FILL_SPACING_STEPS = 2.0
+# Without a frame cap (token-burner), fills are budgeted as if the cap were
+# this, the default budget cap in watch.py. A large --fps on a long video would
+# otherwise make the budget, and the fill grid, thousands of frames.
+UNCAPPED_FILL_BUDGET = 100
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([^\s]+)")
@@ -647,7 +652,7 @@ def extract_scene_or_uniform(
     (``target_frames``, capped by ``max_frames``) less the cuts. The last gap
     runs from the final cut to the end of the range.
     """
-    budget = target_frames if max_frames is None else min(target_frames, max_frames)
+    budget = min(target_frames, UNCAPPED_FILL_BUDGET if max_frames is None else max_frames)
     start = start_seconds or 0.0
     duration = get_metadata(video_path)["duration_seconds"]
     end = duration if end_seconds is None else min(end_seconds, duration)

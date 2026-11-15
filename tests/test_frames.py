@@ -210,8 +210,8 @@ def test_select_fills_thins_evenly_to_the_budget_and_handles_no_budget():
 @pytest.mark.parametrize("cut_every", [30, 50, 60, 120, 300, 7200])
 def test_two_hour_talk_is_not_padded_to_the_talk_cap(cut_every):
     """``--detail talk`` on a 2-hour talk: budget and cap 300. Whatever the cut
-    spacing, fills stay at about half the budget, so a speaker inset that keeps
-    dedup from dropping repeats cannot fill the cap with one slide."""
+    spacing, fills stay at about half the budget. Dedup does not run here, which
+    is the case of a speaker inset that keeps it from dropping repeats."""
     length, budget = 7200.0, 300
     spacing = frames._fill_spacing(length, budget)
     grid = _grid([i * spacing for i in range(int(length / spacing) + 1)])
@@ -223,7 +223,8 @@ def test_two_hour_talk_is_not_padded_to_the_talk_cap(cut_every):
     assert len(fills) <= budget / 2 + 1
     if len(anchors) <= budget / 2:
         assert len(anchors) + len(fills) < budget
-    # A slide shown longer than one spacing (48 s here) always gets a frame.
+    # No stretch is left longer than 1.5 spacings (72 s here) without a frame:
+    # grid frames within half a spacing of a cut are skipped.
     kept = sorted([*anchors, *(f["timestamp_seconds"] for f in fills)])
     assert spacing == pytest.approx(48.0)
     assert max(b - a for a, b in zip(kept, [*kept[1:], length])) <= spacing * 1.5 + 1e-6
@@ -312,3 +313,13 @@ def test_emitted_frames_reads_one_named_showinfo():
               "[showinfo@fill @ 0x2] n:   1 pts:     10 pts_time:2.5\n")
     out = frames._emitted_frames([Path('a.jpg'), Path('b.jpg')], stderr, 1.0, 'gap-fill', 'fill')
     assert [f["timestamp_seconds"] for f in out] == [1.0, 3.5]
+
+
+def test_uncapped_fill_budget_ignores_a_huge_fps_target(sparse_cut_clip, tmp_path):
+    """token-burner with --fps 2: target_frames is fps * duration and there is no
+    cap, but fills stay within UNCAPPED_FILL_BUDGET."""
+    clip, duration = sparse_cut_clip
+    out, meta = frames.extract_scene_or_uniform(
+        str(clip), tmp_path / "f", fps=2.0, target_frames=100_000, max_frames=None)
+    assert 0 < meta["fill_candidate_count"] <= frames.UNCAPPED_FILL_BUDGET - meta["scene_count"]
+    assert len(out) <= frames.UNCAPPED_FILL_BUDGET
