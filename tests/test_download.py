@@ -252,3 +252,65 @@ def test_actual_ytdlp_picks_and_merges_the_source_size(monkeypatch, tmp_path):
         streams = json.loads(probe.stdout)['streams']
         assert [(st['width'], st['height']) for st in streams if st['codec_type'] == 'video'] == [expected], (i, streams)
         assert any(st['codec_type'] == 'audio' for st in streams)
+
+
+def test_fetch_captions_can_skip_the_caption_track(monkeypatch, tmp_path):
+    calls = _fake_stages(monkeypatch)
+    result = download.fetch_captions(URL, tmp_path, captions=False)
+    assert len(calls) == 1 and result['subtitle_path'] is None and result['info_path']
+
+
+def test_lazy_extractor_gets_a_second_metadata_pass(monkeypatch, tmp_path):
+    # TikTok lists its tracks only when subtitle writing is on (upstream issue #268).
+    calls = []
+    def run(cmd):
+        calls.append(cmd)
+        template = cmd[cmd.index('-o') + 1]
+        directory = Path(template.rsplit('/video.', 1)[0].replace('%%', '%'))
+        if '--load-info-json' in cmd:
+            (directory / 'video.eng-US.vtt').write_text('WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n')
+        else:
+            listed = '--write-subs' in cmd
+            (directory / 'video.info.json').write_text(json.dumps(
+                {'id': 'tt', 'extractor_key': 'TikTok', 'subtitles': _tracks('eng-US', 'fra-FR') if listed else {}}))
+    monkeypatch.setattr(download, '_run', run)
+    result = download.fetch_captions(URL, tmp_path)
+    first, second, captions = calls
+    assert '--no-write-subs' in first
+    assert second[second.index('--sub-langs') + 1] == '-all' and '--write-subs' in second
+    assert result['caption_track']['key'] == 'eng-US' and result['subtitle_path'].endswith('video.eng-US.vtt')
+
+
+def test_listed_captions_need_no_second_pass(monkeypatch, tmp_path):
+    calls = _fake_stages(monkeypatch)
+    download.fetch_captions(URL, tmp_path)
+    assert len(calls) == 2 and all('--write-subs' not in c for c in calls[:1])
+
+
+def test_failed_second_listing_keeps_the_metadata(monkeypatch, tmp_path):
+    def run(cmd):
+        if '--write-subs' in cmd:
+            raise SystemExit('yt-dlp failed (exit 1): subtitles request 429')
+        directory = Path(cmd[cmd.index('-o') + 1].rsplit('/video.', 1)[0].replace('%%', '%'))
+        (directory / 'video.info.json').write_text(json.dumps({'id': 'v', 'title': 'Real title', 'duration': 42,
+                                                               'extractor_key': 'Vimeo'}))
+    monkeypatch.setattr(download, '_run', run)
+    result = download.fetch_captions(URL, tmp_path)
+    assert result['info']['title'] == 'Real title' and result['info_path'] and not result['errors']
+    assert json.loads(Path(result['info_path']).read_text())['title'] == 'Real title'
+
+
+def test_youtube_without_tracks_gets_no_second_pass(monkeypatch, tmp_path):
+    calls = []
+    def run(cmd):
+        calls.append(cmd)
+        directory = Path(cmd[cmd.index('-o') + 1].rsplit('/video.', 1)[0].replace('%%', '%'))
+        (directory / 'video.info.json').write_text(json.dumps({'id': 'v', 'extractor_key': 'Youtube'}))
+    monkeypatch.setattr(download, '_run', run)
+    assert download.fetch_captions(URL, tmp_path)['subtitle_path'] is None and len(calls) == 1
+
+
+def test_three_letter_english_code_works_explicitly():
+    info = {'extractor_key': 'TikTok', 'subtitles': _tracks('eng-US', 'fra-FR')}
+    assert [download.select_caption(info, lang)['key'] for lang in ('eng', 'en', 'eng-US')] == ['eng-US'] * 3
+    assert download.select_caption(info, 'fra')['key'] == 'fra-FR'

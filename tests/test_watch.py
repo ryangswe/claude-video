@@ -416,3 +416,37 @@ def test_whispercpp_report_names_the_model_and_detected_language(monkeypatch, ca
     monkeypatch.setattr(sys, 'argv', ['watch', 'video.mp4', '--detail', 'transcript'])
     assert watch.main() == 0
     assert 'whisper.cpp large-v3-turbo, language es' in capsys.readouterr().out
+
+
+def test_force_whisper_skips_captions_and_transcribes(monkeypatch, capsys):
+    _mock_audio(monkeypatch)
+    monkeypatch.setenv('WATCH_WHISPER_BACKEND', 'whispercpp')
+    def captions(*a, **kw):
+        assert kw['captions'] is False
+        return {'subtitle_path': None, 'info': {'title': 'talk', 'duration': 30}, 'caption_track': None}
+    monkeypatch.setattr(watch, 'fetch_captions', captions)
+    segments = Segments([{'start': 1, 'end': 2, 'text': 'spoken words'}])
+    monkeypatch.setattr(watch, 'transcribe_video', lambda *a, **kw: (segments, 'whispercpp'))
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--detail', 'transcript', '--force-whisper'])
+    assert watch.main() == 0
+    assert 'spoken words' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('argv,env', [(['--no-whisper'], 'whispercpp'), ([], 'none')])
+def test_force_whisper_needs_a_backend(monkeypatch, capsys, argv, env):
+    monkeypatch.setenv('WATCH_WHISPER_BACKEND', env)
+    monkeypatch.setattr(watch, 'fetch_captions', lambda *a, **kw: pytest.fail('must stop before any download'))
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--force-whisper', *argv])
+    with pytest.raises(SystemExit):
+        watch.main()
+    assert '--force-whisper' in capsys.readouterr().err
+
+
+def test_force_whisper_without_a_cloud_key_stops_early(monkeypatch, capsys):
+    monkeypatch.setenv('WATCH_WHISPER_BACKEND', 'auto')
+    monkeypatch.setattr(watch, 'load_api_key', lambda *a: (None, None))
+    monkeypatch.setattr(watch, 'fetch_captions', lambda *a, **kw: pytest.fail('must stop before any download'))
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://example.com/video', '--force-whisper'])
+    with pytest.raises(SystemExit):
+        watch.main()
+    assert 'no API key' in capsys.readouterr().err

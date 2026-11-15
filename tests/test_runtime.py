@@ -80,3 +80,34 @@ def test_never_substitutes_missing_pts(stderr):
 def test_signed_exponent_pts():
     out = frames._emitted_frames([Path('a.jpg')], 'pts_time:+1.2e-3', 3.5, 'test')
     assert out[0]['timestamp_seconds'] == 3.5012
+
+
+from datetime import date
+import runtime
+
+
+def test_ytdlp_age_is_read_from_the_release_date_version():
+    today = date(2026, 11, 15)
+    assert runtime.ytdlp_release_age('2026.10.26', today) == 20
+    assert runtime.ytdlp_release_age('2026.10.26.233045\n', today) == 20  # nightly builds add a time
+    assert runtime.ytdlp_release_age('2026.13.40', today) is None
+    assert runtime.ytdlp_release_age('1.2.3', today) is None and runtime.ytdlp_release_age(None, today) is None
+    assert runtime.ytdlp_age_note('2026.10.26', today) == 'Installed yt-dlp 2026.10.26 was released 20 days ago.'
+    stale = runtime.ytdlp_age_note('2026.08.01', today)
+    assert 'released 106 days ago' in stale and 'brew upgrade yt-dlp' in stale
+    assert runtime.ytdlp_age_note('2026.09.16', today).endswith('60 days ago.')  # 60 days is not yet stale
+    assert runtime.ytdlp_age_note('custom-build', today) == ''
+
+
+def test_failed_ytdlp_run_names_the_installed_age(monkeypatch):
+    import subprocess
+    import download
+    def fake(cmd, **kw):
+        if cmd == ['yt-dlp', '--version']:
+            return subprocess.CompletedProcess(cmd, 0, '2020.01.01\n', '')
+        return subprocess.CompletedProcess(cmd, 1, '', 'ERROR: HTTP Error 403: Forbidden')
+    monkeypatch.setattr(download, 'run_text', fake)
+    with pytest.raises(SystemExit) as exc:
+        download._run(['yt-dlp', 'https://example.com/video'])
+    message = str(exc.value)
+    assert 'update yt-dlp' in message and 'Installed yt-dlp 2020.01.01 was released' in message and 'often fail' in message

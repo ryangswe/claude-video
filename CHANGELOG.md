@@ -4,10 +4,16 @@ All notable changes to `/watch` are documented here.
 
 ## [Unreleased]
 
+### Added
+- `--force-whisper` skips native captions and transcribes the audio with the speech backend. It helps when the captions are an English translation of a video in another language, or are poor. It stops before any download when there is no backend to use: with `--no-whisper`, with `WATCH_WHISPER_BACKEND=none`, or with a cloud backend that has no API key. With a cloud backend, the audio is uploaded. Adapted from upstream PR #207.
+- A failed yt-dlp run now names the installed version and how many days ago it was released. Past 60 days it adds that an old release is the likely cause and how to update it. `setup.py --json` reports the same age. yt-dlp versions are release dates, so this needs no network. Adapted from upstream PR #227.
+
 ### Changed
 - Captions now default to English. In `auto` mode the skill takes manual English captions first, then English speech recognition (`en-orig`), then an English translation, and only then the original language. When a YouTube `-orig` track shows the video is in another language, the report labels the English track a translation. To get the original captions of a video in another language, pass `--sub-lang` with its code, such as `--sub-lang ko`.
 
 ### Fixed
+- Transcript lines past the first hour showed minutes only, such as `[61:01]`, while the frames said `1:01:01`. They now use `H:MM:SS` like the frames. From upstream PR #88.
+- Sites that list caption tracks only when subtitle writing is on, such as TikTok, came back with no captions. When the first metadata pass finds no tracks at all on a site other than YouTube, a second pass asks with subtitle writing on. It writes no files unless your yt-dlp config sets `--all-subs`, and if it fails the run goes on without captions. Caption-less videos on other sites pay for that second pass. YouTube lists its tracks the first time and is skipped. TikTok's `eng-US` code now counts as English. Adapted from upstream PR #272 and issue #268.
 - English YouTube videos with dubbed audio got Arabic captions. YouTube lists one `-orig` recognition track per dub, and with more than one the skill took the first in alphabetical order, `ar-orig`. Two real English talks hit this. With several, the original is now the one that matches the video's reported language. A dubbed video that reports no language and has no English track can still get the first dub, labeled unknown.
 
 ## [0.4.1] — 2026-11-11 — fork release

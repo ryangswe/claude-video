@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from runtime import configure_stdio, diagnostic, run_text
+from runtime import configure_stdio, diagnostic, run_text, ytdlp_age_note
 
 VIDEO_EXTS = {'.mp4', '.mkv', '.webm', '.mov', '.m4v', '.avi', '.flv', '.wmv'}
 
@@ -66,10 +66,21 @@ def network_diagnostic(stderr: str) -> str:
     return f'{detail}\n{hint}'
 
 
+def _installed_age_note() -> str:
+    try:
+        version = run_text(['yt-dlp', '--version'], timeout=10).stdout
+    except SystemExit:
+        return ''
+    note = ytdlp_age_note(version)
+    return f'\n{note}' if note else ''
+
+
 def _run(cmd: list[str]):
     result = run_text(cmd)
     if result.returncode != 0:
-        raise SystemExit(f'yt-dlp failed (exit {result.returncode}): {network_diagnostic(result.stderr)}')
+        # Only on failure, so a working run never pays for the extra process.
+        raise SystemExit(f'yt-dlp failed (exit {result.returncode}): {network_diagnostic(result.stderr)}'
+                         f'{_installed_age_note()}')
     return result
 
 
@@ -94,7 +105,8 @@ def _summary(raw: dict, url: str) -> dict:
 
 
 def _caption_lang(key: str) -> str:
-    return key.removesuffix('-orig').split('-')[0].lower()
+    lang = key.removesuffix('-orig').split('-')[0].lower()
+    return 'en' if lang == 'eng' else lang  # TikTok writes English as eng-US
 
 
 def _original_language(info: dict, originals: list[str]) -> str | None:
@@ -154,7 +166,7 @@ def select_caption(info: dict, language: str = 'auto') -> dict | None:
 
     def matches(key):
         base = key.removesuffix('-orig')
-        return key == language or base == language or ('-' not in language and _caption_lang(key) == language.lower())
+        return key == language or base == language or ('-' not in language and _caption_lang(key) == _caption_lang(language))
     for kind, tracks in (('manual', manual), ('automatic', automatic)):
         keys = sorted((k for k in tracks if matches(k)), key=lambda k: (k != language, k != f'{language}-orig', k))
         if keys:
@@ -164,7 +176,27 @@ def select_caption(info: dict, language: str = 'auto') -> dict | None:
     return None
 
 
-def fetch_captions(url: str, out_dir: Path, *, sub_lang='auto', cookies_file=None, cookies_from_browser=None) -> dict:
+def _list_lazy_captions(run: Path, auth: list[str], url: str, info_path: Path) -> dict | None:
+    """Second metadata pass for extractors that list tracks only when subtitle writing is on.
+
+    TikTok is one (upstream issue #268). YouTube lists tracks either way, so callers skip it.
+    '-all' writes no files unless the user's yt-dlp config sets --all-subs. A failure here
+    means "no tracks" and keeps the first pass's metadata.
+    """
+    backup = info_path.read_bytes()
+    try:
+        _run([*_common(run, auth), '--skip-download', '--write-info-json', '--write-subs', '--write-auto-subs',
+              '--sub-langs', '-all', '--', url])
+        return _read_metadata(info_path)
+    except SystemExit as exc:
+        info_path.write_bytes(backup)
+        print(f'[watch] second caption listing failed; continuing without captions: {exc}', file=sys.stderr)
+        return None
+
+
+def fetch_captions(url: str, out_dir: Path, *, sub_lang='auto', captions=True, cookies_file=None,
+                   cookies_from_browser=None) -> dict:
+    """Fetch metadata, then at most one caption track (none when ``captions`` is false)."""
     auth = auth_args(cookies_file, cookies_from_browser)
     run = _new_run(out_dir)
     info_path = run / 'video.info.json'
@@ -174,7 +206,10 @@ def fetch_captions(url: str, out_dir: Path, *, sub_lang='auto', cookies_file=Non
         _run([*_common(run, auth), '--skip-download', '--write-info-json', '--no-write-subs', '--no-write-auto-subs', '--', url])
         info = _read_metadata(info_path)
         result.update(info=_summary(info, url), info_path=str(info_path))
-        track = select_caption(info, sub_lang)
+        youtube = str(info.get('extractor_key') or info.get('extractor') or '').lower().startswith('youtube')
+        if captions and not youtube and not info.get('subtitles') and not info.get('automatic_captions'):
+            info = _list_lazy_captions(run, auth, url, info_path) or info
+        track = select_caption(info, sub_lang) if captions else None
         if not track:
             return result
         result['caption_track'] = track
