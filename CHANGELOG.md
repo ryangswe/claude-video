@@ -2,7 +2,7 @@
 
 All notable changes to `/watch` are documented here.
 
-## [Unreleased]
+## [0.4.2] — 2026-11-15 — fork release
 
 ### Added
 - `--force-whisper` skips native captions and transcribes the audio with the speech backend. It helps when the captions are an English translation of a video in another language, or are poor. It stops before any download when there is no backend to use: with `--no-whisper`, with `WATCH_WHISPER_BACKEND=none`, or with a cloud backend that has no API key. With a cloud backend, the audio is uploaded. Adapted from upstream PR #207.
