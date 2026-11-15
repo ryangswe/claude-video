@@ -212,7 +212,7 @@ def main() -> int:
         help="Disable near-duplicate frame removal. Keeps visually identical "
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
-    ap.add_argument("--sub-lang", default=None, help="Exact caption language preference (default auto/native)")
+    ap.add_argument("--sub-lang", default=None, help="Exact caption language (default auto: English first, then the original language)")
     cookies = ap.add_mutually_exclusive_group()
     cookies.add_argument("--cookies", default=None, help="Explicit cookie file (yt-dlp may update this jar)")
     cookies.add_argument("--cookies-from-browser", default=None, help="Explicit yt-dlp browser selector")
