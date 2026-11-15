@@ -37,6 +37,17 @@ MAX_READ_DIMENSION = 1998
 # per-channel difference (0-255) is at or below DEDUP_THRESHOLD. This catches
 # held slides, but subtle code/text changes can be missed at this thumbnail size. Unlike a within-frame
 # perceptual hash, this distinguishes flat frames (solid slides, fades) by color.
+# Gap fill: frames for gaps between scene cuts come from a uniform grid this
+# many budget spacings (range length / frame budget) apart. At 2, fills alone
+# reach at most about half the budget, so a long talk whose cuts are sparse is
+# not padded to its cap even when near-duplicate removal cannot drop repeats.
+# A stretch without a cut is left at most about 1.5 grid spacings without a
+# frame, because grid frames within half a spacing of a cut are skipped.
+FILL_SPACING_STEPS = 2.0
+# Without a frame cap (token-burner), fills are budgeted as if the cap were
+# this, the default budget cap in watch.py. A large --fps on a long video would
+# otherwise make the budget, and the fill grid, thousands of frames.
+UNCAPPED_FILL_BUDGET = 100
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([^\s]+)")
@@ -141,7 +152,13 @@ def validate_controls(resolution, max_frames, start_seconds, end_seconds, fps=No
         raise SystemExit("--fps must be finite and greater than zero")
 
 
-def _emitted_frames(files, stderr, offset, reason):
+def _emitted_frames(files, stderr, offset, reason, instance=None):
+    """Label ``files`` with the times ``showinfo`` logged. ``instance`` reads only
+    the lines of the filter named ``showinfo@<instance>``, for a graph that
+    writes two outputs in one pass."""
+    if instance is not None:
+        tag = f"[showinfo@{instance} @"
+        stderr = "\n".join(line for line in stderr.splitlines() if line.startswith(tag))
     try:
         stamps = [float(m.group(1)) for m in SHOWINFO_TS_RE.finditer(stderr)]
         # FFmpeg may log an extra filtered frame before an output cap stops it.
@@ -237,20 +254,27 @@ def extract_scene_candidates(
     end_seconds: float | None = None,
     threshold: float = SCENE_THRESHOLD,
     source_width: int | None = None,
-) -> list[dict]:
+    fill_rate: float | None = None,
+) -> list[dict] | tuple[list[dict], list[dict]]:
     """Extract first frame plus ffmpeg scene-change frames.
 
     When ``max_frames`` is set, ``-frames:v`` lets ffmpeg stop decoding once it
     has emitted that many frames (early exit) and avoids writing extras that we
     would only delete afterwards. ``None`` (uncapped "complete" detail) keeps
     every detected shot, as the user explicitly opted in.
+
+    With ``fill_rate`` (frames per second), the same decode also writes a
+    uniform grid of ``fill_*.jpg`` candidates, the first frame in each
+    ``1 / fill_rate`` bucket, and the function returns ``(scene, grid)``. The
+    grid branch splits off after the scale filter when scaling comes first, so
+    filling gaps costs no second decode.
     """
     validate_controls(resolution, max_frames, start_seconds, end_seconds)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for existing in out_dir.glob("frame_*.jpg"):
+    for existing in [*out_dir.glob("frame_*.jpg"), *out_dir.glob("fill_*.jpg")]:
         existing.unlink()
 
     output_pattern = str(out_dir / "frame_%04d.jpg")
@@ -269,29 +293,39 @@ def extract_scene_candidates(
     # On a source at least twice the frame width, scaling before scoring is faster (2.3x on
     # 1080p, 1.4x on 720p at 512 px) and found the same cuts on real footage. Closer to the
     # frame width it saves no time and costs more CPU.
-    if source_width and source_width >= 2 * resolution:
-        vf = f"{_scale_filter(resolution)},{select},showinfo"
+    scale_first = bool(source_width and source_width >= 2 * resolution)
+    scale = _scale_filter(resolution)
+    frame_cap = ["-frames:v", str(max_frames)] if max_frames is not None else []
+    cmd += ["-i", str(Path(video_path).resolve())]
+    if fill_rate is None:
+        vf = f"{scale},{select},showinfo" if scale_first else f"{select},{scale},showinfo"
+        cmd += ["-vf", vf, *sync_args(), *frame_cap, "-q:v", "4", output_pattern]
     else:
-        vf = f"{select},{_scale_filter(resolution)},showinfo"
-    cmd += [
-        "-i", str(Path(video_path).resolve()),
-        "-vf", vf,
-        *sync_args(),
-    ]
-    if max_frames is not None:
-        cmd += ["-frames:v", str(max_frames)]
-    cmd += [
-        "-q:v", "4",
-        output_pattern,
-    ]
+        grid = (f"select='isnan(prev_selected_t)+gt(floor(t*{fill_rate:.17g}),"
+                f"floor(prev_selected_t*{fill_rate:.17g}))'")
+        if scale_first:
+            graph = (f"{scale},split=2[s][g];[s]{select},showinfo@scene[scene];"
+                     f"[g]{grid},showinfo@fill[fill]")
+        else:
+            graph = (f"split=2[s][g];[s]{select},{scale},showinfo@scene[scene];"
+                     f"[g]{grid},{scale},showinfo@fill[fill]")
+        cmd += [
+            "-filter_complex", graph,
+            "-map", "[scene]", *sync_args(), *frame_cap, "-q:v", "4", output_pattern,
+            "-map", "[fill]", *sync_args(), "-q:v", "4", str(out_dir / "fill_%04d.jpg"),
+        ]
     result = run_text(cmd)
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg scene extraction failed: {result.stderr.strip()}")
 
-    out = _emitted_frames(sorted(out_dir.glob("frame_*.jpg")), result.stderr, start_seconds or 0.0, "scene-change")
+    offset = start_seconds or 0.0
+    instance = None if fill_rate is None else "scene"
+    out = _emitted_frames(sorted(out_dir.glob("frame_*.jpg")), result.stderr, offset, "scene-change", instance)
     if out:
         out[0]["reason"] = "first-frame"
-    return out
+    if fill_rate is None:
+        return out
+    return out, _emitted_frames(sorted(out_dir.glob("fill_*.jpg")), result.stderr, offset, "gap-fill", "fill")
 
 
 def _even_indices(count: int, n: int) -> list[int]:
@@ -522,6 +556,70 @@ def _dedupe_by_deltas(
     return kept, len(dropped)
 
 
+def _delete_frames(frames: list[dict]) -> None:
+    for frame in frames:
+        try:
+            Path(frame["path"]).unlink()
+        except OSError:
+            pass
+
+
+def _fill_spacing(length: float, budget: int) -> float:
+    """Seconds between gap-fill grid frames for a range of ``length`` seconds."""
+    return FILL_SPACING_STEPS * max(1.0 / MAX_FPS, length / max(1, budget))
+
+
+def _select_fills(
+    anchors: list[float], grid: list[dict], end: float, spacing: float, budget: int,
+) -> tuple[list[dict], list[tuple[float, float]]]:
+    """Pick the grid frames that sit inside wide gaps between scene cuts.
+
+    ``anchors`` are the cut times in order (the first frame counts as one). A
+    gap runs from one anchor to the next, and the last one runs to ``end``.
+    ``grid`` frames are ``spacing`` seconds apart. A gap is filled only when it
+    is wider than ``spacing``, and grid frames closer than half a spacing to a
+    cut are skipped, since they would repeat that cut. When more frames
+    qualify than ``budget``, they are thinned evenly. Returns
+    ``(fills, filled_gaps)``.
+    """
+    if budget <= 0 or not anchors or not grid:
+        return [], []
+    bounds = list(zip(anchors, [*anchors[1:], end]))
+    wide = [(a, b) for a, b in bounds if b - a > spacing]
+    picked: list[dict] = []
+    filled: list[tuple[float, float]] = []
+    for a, b in wide:
+        last = b == end
+        inside = [g for g in grid if a + spacing / 2 <= g["timestamp_seconds"]
+                  and (g["timestamp_seconds"] <= b if last else g["timestamp_seconds"] <= b - spacing / 2)]
+        picked.extend(inside)
+    if len(picked) > budget:
+        picked = [picked[i] for i in _even_indices(len(picked), budget)]
+    for a, b in wide:
+        if any(a < f["timestamp_seconds"] <= b for f in picked):
+            filled.append((a, b))
+    return picked, filled
+
+
+def _renumber_sequence(frames: list[dict], out_dir: Path) -> list[dict]:
+    """Rename a frame list to one chronological ``frame_%04d.jpg`` sequence
+    and reindex it 0..n-1. The dedup thumbnailer reads a single numbered
+    pattern, so mixed ``frame_`` and ``fill_`` names would make it skip dedup.
+    Renames go through temporary names, so they never overwrite each other.
+    """
+    frames = sorted(frames, key=lambda f: f["timestamp_seconds"])
+    staged = []
+    for i, frame in enumerate(frames):
+        tmp = out_dir / f".renumber_{i:04d}.jpg"
+        Path(frame["path"]).rename(tmp)
+        staged.append(tmp)
+    for i, (frame, tmp) in enumerate(zip(frames, staged)):
+        dst = out_dir / f"frame_{i + 1:04d}.jpg"
+        tmp.rename(dst)
+        frame["path"], frame["index"] = str(dst), i
+    return frames
+
+
 def extract_scene_or_uniform(
     video_path: str,
     out_dir: Path,
@@ -545,8 +643,21 @@ def extract_scene_or_uniform(
     with ``-frames:v`` instead would keep only the first ``max_frames`` cuts and
     drop the tail of long videos (and could even fall below ``SCENE_MIN_FRAMES``
     and misfire the uniform fallback on a cut-heavy clip).
+
+    Cuts are anchors, not the whole answer. Slow changes (scrolls, zooms, a
+    slide change on a white template) score far below ``SCENE_THRESHOLD``, so
+    the same decode also writes a uniform grid ``FILL_SPACING_STEPS`` budget
+    spacings apart, and gaps between cuts wider than one grid spacing get the
+    grid frames inside them (``reason`` ``gap-fill``), up to the budget
+    (``target_frames``, capped by ``max_frames``) less the cuts. The last gap
+    runs from the final cut to the end of the range.
     """
-    scene_frames = extract_scene_candidates(
+    budget = min(target_frames, UNCAPPED_FILL_BUDGET if max_frames is None else max_frames)
+    start = start_seconds or 0.0
+    duration = get_metadata(video_path)["duration_seconds"]
+    end = duration if end_seconds is None else min(end_seconds, duration)
+    spacing = _fill_spacing(end - start, budget)
+    scene_frames, grid = extract_scene_candidates(
         video_path,
         out_dir,
         resolution=resolution,
@@ -554,19 +665,34 @@ def extract_scene_or_uniform(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
         source_width=source_width,
+        fill_rate=1.0 / spacing,
     )
     scene_count = len(scene_frames)
     if scene_count >= SCENE_MIN_FRAMES:
-        deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
+        fills, filled_gaps = _select_fills(
+            [f["timestamp_seconds"] for f in scene_frames], grid, end, spacing, budget - scene_count)
+        keep = {f["path"] for f in fills}
+        _delete_frames([g for g in grid if g["path"] not in keep])
+        candidates = _renumber_sequence([*scene_frames, *fills], out_dir) if fills else scene_frames
+        deduped, n_dropped = dedupe_perceptual(candidates) if dedup else (candidates, 0)
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
+        kept = [f["timestamp_seconds"] for f in selected if f["reason"] == "gap-fill"]
         return selected, {
             "engine": "scene",
-            "candidate_count": scene_count,
+            "candidate_count": len(candidates),
+            "scene_count": scene_count,
+            "fill_candidate_count": len(fills),
+            # Counted after dedup and sampling, so they describe the frames shown.
+            "fill_count": len(kept),
+            "filled_gaps": [[round(a, 3), round(b, 3)] for a, b in filled_gaps
+                            if any(a < t <= b for t in kept)],
             "deduped_count": n_dropped,
             "selected_count": len(selected),
             "fallback": False,
         }
+
+    _delete_frames(grid)
 
     fallback_cap = target_frames if max_frames is None else min(max_frames, target_frames)
     frames = extract(
